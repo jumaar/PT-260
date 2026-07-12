@@ -2,7 +2,7 @@ use base64::Engine;
 use image::ImageReader;
 use std::fs;
 use std::io::{Cursor, Write};
-use std::os::unix::io::FromRawFd;
+use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
@@ -10,6 +10,10 @@ use tauri::Emitter;
 
 // MAC del último dispositivo Bluetooth conectado (para reconexión automática)
 static LAST_BT_MAC: Mutex<Option<String>> = Mutex::new(None);
+
+// Socket RFCOMM persistente: se crea una sola vez y se reutiliza en todas
+// las impresiones. Evita el ciclo disconnect/reconnect que causaba EBUSY.
+static BT_SOCKET_CACHE: Mutex<Option<(i32, String)>> = Mutex::new(None);
 
 // ─── LOG MACROS ────────────────────────────────────────────────────
 // Usamos eprintln! para que los logs aparezcan en stderr (visible
@@ -335,11 +339,35 @@ fn bt_find_connected_printer() -> Option<String> {
     None
 }
 
-/// Envía datos crudos a la impresora por un socket RFCOMM cliente directo
-/// (AF_BLUETOOTH / BTPROTO_RFCOMM). NO requiere root ni nodos /dev/rfcomm.
-/// Si el connect devuelve EBUSY (sesión stale), resetea el enlace BlueZ y
+/// Cierra el socket RFCOMM cacheado (si existe) y limpia el cache.
+fn bt_close_cached_socket() {
+    if let Ok(mut cache) = BT_SOCKET_CACHE.lock() {
+        if let Some((fd, mac)) = cache.take() {
+            unsafe { libc::close(fd); }
+            log_info!("bluetooth: socket persistente cerrado para {}", mac);
+        }
+    }
+}
+
+/// Verifica si un fd de socket sigue sano (sin errores pendientes).
+fn bt_socket_healthy(fd: i32) -> bool {
+    let mut err: i32 = 0;
+    let mut err_len: libc::socklen_t = 4;
+    unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_ERROR,
+            &mut err as *mut _ as *mut libc::c_void,
+            &mut err_len,
+        ) == 0 && err == 0
+    }
+}
+
+/// Crea un socket RFCOMM nuevo hacia `mac:channel` y lo conecta.
+/// Si connect devuelve EBUSY (sesión stale), resetea el enlace BlueZ y
 /// reintenta una vez.
-fn bt_rfcomm_send(mac: &str, channel: u8, data: &[u8]) -> Result<(), String> {
+fn bt_create_rfcomm_socket(mac: &str, channel: u8) -> Result<i32, String> {
     let bdaddr = bt_parse_mac(mac).ok_or_else(|| format!("MAC inválida: {}", mac))?;
 
     let mut last_err = String::new();
@@ -354,8 +382,6 @@ fn bt_rfcomm_send(mac: &str, channel: u8, data: &[u8]) -> Result<(), String> {
             continue;
         }
 
-        // struct sockaddr_rc { sa_family_t rc_family; bdaddr_t rc_bdaddr; uint8_t rc_channel; }
-        // tamaño = 10 (family 2 + bdaddr 6 + channel 1 + padding 1)
         let mut sa = [0u8; 10];
         sa[0..2].copy_from_slice(&(libc::AF_BLUETOOTH as u16).to_ne_bytes());
         sa[2..8].copy_from_slice(&bdaddr);
@@ -367,37 +393,93 @@ fn bt_rfcomm_send(mac: &str, channel: u8, data: &[u8]) -> Result<(), String> {
             last_err = format!("connect RFCOMM: {}", e);
             unsafe { libc::close(fd) };
             if e.raw_os_error() == Some(16) {
-                // EBUSY: sesión RFCOMM stale del kernel
-                log_warn!("bt_rfcomm_send: EBUSY en connect (intento {}), reseteando enlace...", attempt + 1);
+                log_warn!("bt_create_rfcomm_socket: EBUSY en connect (intento {}), reseteando enlace...", attempt + 1);
                 continue;
             }
             return Err(last_err);
         }
 
-        // Conectado: enviamos los datos. File es solo un wrapper del fd,
-        // write_all funciona sobre cualquier fd (incluido un socket).
-        let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
-        match file.write_all(data).and_then(|_| file.flush()) {
-            Ok(()) => {
-                log_info!(
-                    "bt_rfcomm_send: {} bytes enviados a {} canal {}",
-                    data.len(),
-                    mac,
-                    channel
-                );
-                return Ok(());
-            }
-            Err(e) => {
-                last_err = format!("write RFCOMM: {}", e);
-            }
-        }
-        // file se cierra al salir del scope (drop -> close)
+        return Ok(fd);
     }
 
     Err(format!(
-        "No se pudo enviar por Bluetooth a {}: {}",
+        "No se pudo conectar RFCOMM a {}: {}",
         mac, last_err
     ))
+}
+
+/// Envía datos crudos a la impresora por Bluetooth RFCOMM.
+/// Usa un socket persistente: lo crea una sola vez y lo reutiliza en todas
+/// las impresiones. Si el socket cacheado falla, lo recrea automáticamente.
+fn bt_rfcomm_send(mac: &str, channel: u8, data: &[u8]) -> Result<(), String> {
+    // ── Intentar usar socket cacheado ──────────────────────────
+    let cached_fd: Option<i32> = {
+        let cache = BT_SOCKET_CACHE.lock().map_err(|e| format!("lock: {}", e))?;
+        cache.as_ref().and_then(|(fd, cached_mac)| {
+            if cached_mac == mac { Some(*fd) } else { None }
+        })
+    };
+
+    if let Some(fd) = cached_fd {
+        if bt_socket_healthy(fd) {
+            let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+            match file.write_all(data).and_then(|_| file.flush()) {
+                Ok(()) => {
+                    let raw = file.into_raw_fd();
+                    // Devolver al cache
+                    if let Ok(mut cache) = BT_SOCKET_CACHE.lock() {
+                        if cache.as_ref().map_or(true, |(_, m)| m == mac) {
+                            *cache = Some((raw, mac.to_string()));
+                        } else {
+                            unsafe { libc::close(raw); }
+                        }
+                    } else {
+                        unsafe { libc::close(raw); }
+                    }
+                    log_info!(
+                        "bt_rfcomm_send: {} bytes enviados a {} canal {} (socket reutilizado)",
+                        data.len(), mac, channel
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    let _ = file.into_raw_fd();
+                    log_warn!("bt_rfcomm_send: write falló en socket cacheado ({}), recreando...", e);
+                }
+            }
+        }
+        // Socket muerto o write falló: cerrar y limpiar cache
+        bt_close_cached_socket();
+    }
+
+    // ── Crear socket nuevo ─────────────────────────────────────
+    let fd = bt_create_rfcomm_socket(mac, channel)?;
+
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    match file.write_all(data).and_then(|_| file.flush()) {
+        Ok(()) => {
+            let raw = file.into_raw_fd();
+            // Guardar en cache para reutilizar
+            if let Ok(mut cache) = BT_SOCKET_CACHE.lock() {
+                if cache.as_ref().map_or(true, |(_, m)| m == mac) {
+                    *cache = Some((raw, mac.to_string()));
+                } else {
+                    unsafe { libc::close(raw); }
+                }
+            } else {
+                unsafe { libc::close(raw); }
+            }
+            log_info!(
+                "bt_rfcomm_send: {} bytes enviados a {} canal {} (socket nuevo)",
+                data.len(), mac, channel
+            );
+            Ok(())
+        }
+        Err(e) => {
+            log_error!("bt_rfcomm_send: write falló en socket nuevo: {}", e);
+            Err(format!("write RFCOMM: {}", e))
+        }
+    }
 }
 
 // ─── COMANDOS TAURI ────────────────────────────────────────────────
@@ -515,16 +597,24 @@ fn bluetooth_connect_printer(mac: String) -> Result<String, String> {
     // Persistir la MAC en disco para reconexión automática en próximos arranques
     save_persisted_mac(&mac);
 
-    // Asegurar enlace BlueZ limpio. Si ya está conectado pero la sesión
-    // RFCOMM está stale, forzamos un reset para evitar EBUSY al imprimir.
-    if bt_is_connected(&mac) {
-        log_info!("bluetooth: ya conectado, reseteando enlace para sesión RFCOMM limpia...");
-        bt_reset_link(&mac);
-    } else {
+    // Asegurar enlace BlueZ. Con socket persistente ya no se resetea
+    // el enlace al estar conectado (eso causaba el ciclo disconnect/reconnect).
+    if !bt_is_connected(&mac) {
         let _ = Command::new("bluetoothctl").args(["connect", &mac]).output();
         std::thread::sleep(std::time::Duration::from_millis(500));
         if !bt_is_connected(&mac) {
             bt_reset_link(&mac);
+        }
+    }
+
+    // Cerrar socket cacheado si es de otra MAC (se recreará al imprimir)
+    {
+        let cache = BT_SOCKET_CACHE.lock().ok();
+        if let Some(cache) = cache {
+            if cache.as_ref().map_or(false, |(_, m)| m != &mac) {
+                drop(cache);
+                bt_close_cached_socket();
+            }
         }
     }
 
@@ -537,6 +627,9 @@ fn bluetooth_disconnect_printer() -> Result<(), String> {
     log_cmd!("bluetooth_disconnect_printer");
 
     let mac = LAST_BT_MAC.lock().ok().and_then(|m| m.clone());
+
+    bt_close_cached_socket();
+
     if let Some(mac) = mac {
         log_info!("bluetooth: desconectando {} ...", mac);
         let _ = Command::new("bluetoothctl")
@@ -558,13 +651,15 @@ fn imprimir_etiqueta_raw(
     width_mm: u32,
     height_mm: u32,
     invert: bool,
+    copies: u32,
 ) -> Result<(), String> {
     log_cmd!("imprimir_etiqueta_raw");
     log_info!(
-        "parametros: width_mm={}, height_mm={}, invert={}, base64_len={}",
+        "parametros: width_mm={}, height_mm={}, invert={}, copies={}, base64_len={}",
         width_mm,
         height_mm,
         invert,
+        copies,
         base64_image.len()
     );
 
@@ -671,7 +766,8 @@ fn imprimir_etiqueta_raw(
 
     tspl.extend_from_slice(&buffer);
 
-    write!(&mut tspl, "\nPRINT 1\n").map_err(|e| {
+    let n = if copies == 0 { 1 } else { copies };
+    write!(&mut tspl, "\nPRINT {}\n", n).map_err(|e| {
         log_error!("fallo al escribir comando PRINT: {}", e);
         format!("Error PRINT: {}", e)
     })?;

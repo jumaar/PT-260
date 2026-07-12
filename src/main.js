@@ -32,6 +32,7 @@ const PX_PER_MM = 5;
 const ctrlWidth       = document.getElementById('ctrl-width');
 const ctrlHeight      = document.getElementById('ctrl-height');
 const fontSizeInput   = document.getElementById('ctrl-fontsize');
+const copiesInput     = document.getElementById('ctrl-copies');
 const canvas          = document.getElementById('sticker-canvas');
 const invertCheckbox  = document.getElementById('invert-checkbox');
 const connIcon        = document.getElementById('conn-icon');
@@ -248,8 +249,13 @@ async function ejecutarImpresion() {
     var b64 = canvas.toDataURL('image/png').split(',')[1];
     canvasFocused = wasFocused; if (canvasFocused) startBlink(); drawPreview();
 
+    var copies = parseInt(copiesInput.value) || 1;
+    if (copies < 1) copies = 1;
+    if (copies > 99) copies = 99;
+    copiesInput.value = copies;
+
     try {
-        await invoke('imprimir_etiqueta_raw', { base64Image: b64, widthMm: widthMm, heightMm: heightMm, invert: invertCheckbox.checked });
+        await invoke('imprimir_etiqueta_raw', { base64Image: b64, widthMm: widthMm, heightMm: heightMm, invert: invertCheckbox.checked, copies: copies });
         logInfo('impresion OK');
         alert('Impresión enviada');
     } catch(e) { logError('impresion FAIL: ' + e); alert('Error: ' + e); }
@@ -261,6 +267,7 @@ document.getElementById('btn-print').addEventListener('click', ejecutarImpresion
 
 // ─── INICIO ─────────────────────────────────────────────────────────
 async function init() {
+    copiesInput.value = 1;
     updateCanvas();
     setupUsbListener();
 

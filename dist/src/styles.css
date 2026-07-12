@@ -116,7 +116,7 @@ main {
 footer {
     background: #16213e; padding: 10px 24px;
     border-top: 1px solid #0f3460;
-    display: flex; justify-content: center; flex-shrink: 0;
+    display: flex; justify-content: center; gap: 24px; flex-shrink: 0;
 }
 .footer-control { display: flex; align-items: center; gap: 8px; }
 .footer-control label { font-size: 0.8rem; color: #aaa; font-weight: 500; }
