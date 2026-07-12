@@ -1,0 +1,142 @@
+* { margin:0; padding:0; box-sizing:border-box; }
+
+body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    display: flex; flex-direction: column;
+    min-height: 100vh;
+}
+
+/* ─── HEADER ─────────────────────────── */
+header {
+    background: #16213e;
+    padding: 10px 24px;
+    display: flex; justify-content: space-between; align-items: center;
+    border-bottom: 1px solid #0f3460;
+    flex-shrink: 0; gap: 16px;
+}
+header h1 { font-size: 1.2rem; font-weight: 600; color: #e94560; white-space: nowrap; }
+
+/* Panel conexión */
+#conn-panel { display: flex; align-items: center; gap: 10px; font-size: 0.82rem; }
+#conn-icon  { font-size: 0.7rem; }
+
+#conn-text.usb-ok   { color: #00e676; font-weight: 600; }
+#conn-text.usb-fail { color: #ff5252; font-weight: 600; }
+#conn-text.bt-ok    { color: #4fc3f7; font-weight: 600; }
+#conn-text.bt-fail  { color: #ff9800; font-weight: 600; }
+
+.btn-hdr {
+    background: #0f3460; color: #ccc;
+    border: 1px solid #1a4a7a; padding: 4px 12px;
+    border-radius: 5px; font-size: 0.76rem;
+    cursor: pointer; white-space: nowrap;
+}
+.btn-hdr:hover { background: #1a4a7a; color: #fff; }
+.btn-hdr:disabled { opacity: 0.6; cursor: wait; }
+.btn-hdr-off { background: #5c1a1a; border-color: #8b2a2a; color: #ff9999; }
+.btn-hdr-off:hover { background: #7a2a2a; }
+
+/* Dropdown Bluetooth - texto y fondo visibles */
+#bt-device-list {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    color: #fff !important;
+    background-color: #0d1117 !important;
+    border: 1px solid #30363d;
+    padding: 4px 8px;
+    border-radius: 5px;
+    font-size: 0.76rem;
+    outline: none;
+    max-width: 180px;
+}
+#bt-device-list:focus { border-color: #e94560; }
+#bt-device-list option {
+    color: #c9d1d9;
+    background: #161b22;
+    padding: 4px;
+}
+
+/* ─── MAIN ───────────────────────────── */
+main {
+    flex: 1;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 24px 24px 12px; gap: 12px;
+    overflow-y: auto;
+}
+.canvas-row { display: flex; align-items: center; gap: 12px; }
+.height-control { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.height-control label { font-size: 0.75rem; color: #aaa; text-align: center; line-height: 1.2; }
+.height-control input {
+    width: 58px; background: #16213e; border: 1px solid #0f3460;
+    color: #e0e0e0; padding: 6px 4px; border-radius: 6px;
+    font-size: 0.85rem; text-align: center; outline: none;
+}
+.height-control input:focus { border-color: #e94560; }
+
+#canvas-container {
+    background: #0f3460; padding: 16px; border-radius: 8px;
+    display: flex; justify-content: center; align-items: center;
+    border: 1px solid #1a4a7a; cursor: text;
+}
+#canvas-container:hover { border-color: #e94560; }
+#canvas-container:focus-within { border-color: #e94560; box-shadow: 0 0 8px rgba(233,69,96,0.3); }
+#sticker-canvas { background: #fff; border-radius: 2px; outline: none; cursor: text; }
+
+.width-control { display: flex; align-items: center; gap: 8px; }
+.width-control label { font-size: 0.8rem; color: #aaa; font-weight: 500; }
+.width-control input {
+    width: 80px; background: #16213e; border: 1px solid #0f3460;
+    color: #e0e0e0; padding: 6px 10px; border-radius: 6px;
+    font-size: 0.85rem; text-align: center; outline: none;
+}
+.width-control input:focus { border-color: #e94560; }
+
+.action-row { display: flex; align-items: center; gap: 12px; }
+.btn-primary {
+    background: #e94560; color: #fff; border: none;
+    padding: 10px 24px; border-radius: 6px;
+    font-size: 0.95rem; font-weight: 600; cursor: pointer;
+}
+.btn-primary:hover { background: #c73652; }
+.btn-secondary {
+    background: #0f3460; color: #ccc; border: none;
+    padding: 8px 16px; border-radius: 6px;
+    font-size: 0.85rem; cursor: pointer;
+}
+.btn-secondary:hover { background: #1a4a7a; }
+
+.switch-group { display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: #ccc; cursor: pointer; }
+.switch-group input[type="checkbox"] { accent-color: #e94560; width: 15px; height: 15px; cursor: pointer; }
+
+/* ─── FOOTER ─────────────────────────── */
+footer {
+    background: #16213e; padding: 10px 24px;
+    border-top: 1px solid #0f3460;
+    display: flex; justify-content: center; flex-shrink: 0;
+}
+.footer-control { display: flex; align-items: center; gap: 8px; }
+.footer-control label { font-size: 0.8rem; color: #aaa; font-weight: 500; }
+.footer-control input {
+    width: 70px; background: #1a1a2e; border: 1px solid #0f3460;
+    color: #e0e0e0; padding: 6px 10px; border-radius: 6px;
+    font-size: 0.85rem; text-align: center; outline: none;
+}
+.footer-control input:focus { border-color: #e94560; }
+
+/* ─── SPINNER ────────────────────────── */
+.spinner {
+    display: inline-block;
+    width: 18px; height: 18px;
+    border: 2px solid #0f3460;
+    border-top: 2px solid #e94560;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: middle;
+    margin: 0 4px;
+}
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
