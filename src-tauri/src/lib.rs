@@ -1,6 +1,9 @@
 use base64::Engine;
 use image::ImageReader;
+use std::fs;
 use std::io::{Cursor, Write};
+use std::os::unix::io::FromRawFd;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
 use tauri::Emitter;
@@ -34,6 +37,94 @@ macro_rules! log_cmd {
     ($cmd:expr) => {
         eprintln!("[CMD   ][rust] invoke recibido: `{}`", $cmd)
     };
+}
+
+// ─── PERSISTENCIA DE MAC BLUETOOTH ──────────────────────────────────
+// Guarda las MACs de dispositivos que se conectaron exitosamente en
+// ~/.config/rust-hello/bt-devices.json para reconexión automática al iniciar.
+
+fn bt_persist_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(home).join(".config/rust-hello/bt-devices.json")
+}
+
+fn load_persisted_macs() -> Vec<String> {
+    let path = bt_persist_path();
+    match fs::read_to_string(&path) {
+        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(json) => {
+                if let Some(macs) = json.get("macs").and_then(|v| v.as_array()) {
+                    let list: Vec<String> = macs
+                        .iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect();
+                    log_info!("persistencia: {} MAC(s) cargada(s) del disco", list.len());
+                    return list;
+                }
+            }
+            Err(e) => log_warn!("persistencia: error parseando JSON: {}", e),
+        },
+        Err(_) => log_info!("persistencia: no hay archivo previo (primer arranque)"),
+    }
+    vec![]
+}
+
+fn save_persisted_mac(mac: &str) {
+    let path = bt_persist_path();
+    let mut macs = load_persisted_macs();
+
+    if !macs.contains(&mac.to_string()) {
+        macs.push(mac.to_string());
+    }
+    if macs.len() > 5 {
+        macs = macs[macs.len() - 5..].to_vec();
+    }
+
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let json = serde_json::json!({"macs": macs});
+    if let Ok(data) = serde_json::to_string_pretty(&json) {
+        if let Err(e) = fs::write(&path, data) {
+            log_warn!("persistencia: no se pudo escribir archivo: {}", e);
+        } else {
+            log_info!("persistencia: MAC {} guardada en disco", mac);
+        }
+    }
+}
+
+/// Intenta reconectar a una MAC Bluetooth guardada previamente.
+/// Primero verifica si ya está conectada. Si no, empareja y conecta.
+/// Retorna true si logró conectar, false en caso contrario.
+fn bt_try_reconnect(mac: &str) -> bool {
+    log_info!("bluetooth: intentando reconectar a {}...", mac);
+
+    if bt_is_connected(mac) {
+        log_info!("bluetooth: {} ya esta conectado", mac);
+        return true;
+    }
+
+    match bluetooth_pair(mac) {
+        Ok(()) => {
+            let _ = Command::new("bluetoothctl")
+                .args(["connect", mac])
+                .output();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+
+            if bt_is_connected(mac) {
+                log_info!("bluetooth: reconectado exitosamente a {}", mac);
+                return true;
+            }
+
+            bt_reset_link(mac);
+            bt_is_connected(mac)
+        }
+        Err(e) => {
+            log_warn!("bluetooth: no se pudo emparejar con {}: {}", mac, e);
+            false
+        }
+    }
 }
 
 // ─── DETECCIÓN DE HARDWARE ─────────────────────────────────────────
@@ -178,93 +269,137 @@ fn bluetooth_pair(mac: &str) -> Result<(), String> {
     }
 }
 
-/// Conecta al dispositivo Bluetooth por SPP (RFCOMM) y devuelve la ruta
-/// del dispositivo serie (/dev/rfcommX).
-fn bluetooth_connect_rfcomm(mac: &str, channel: u8) -> Result<String, String> {
-    // Primero liberar cualquier rfcomm previo
-    for i in 0..5 {
-        let path = format!("/dev/rfcomm{}", i);
-        if std::path::Path::new(&path).exists() {
-            log_info!("bluetooth: liberando {} ...", path);
-            let _ = Command::new("rfcomm")
-                .args(["release", &i.to_string()])
-                .output();
-        }
+/// Protocolo RFCOMM sobre L2CAP (Bluetooth Serial Port).
+const BTPROTO_RFCOMM: i32 = 3;
+
+/// Parsea una MAC "AA:BB:CC:DD:EE:FF" y la devuelve en formato bdaddr
+/// (little-endian, 6 bytes), tal como la espera el kernel Linux.
+fn bt_parse_mac(mac: &str) -> Option<[u8; 6]> {
+    let parts: Vec<&str> = mac.split(':').collect();
+    if parts.len() != 6 {
+        return None;
     }
-
-    log_info!(
-        "bluetooth: conectando rfcomm {} a {} canal {} ...",
-        0,
-        mac,
-        channel
-    );
-
-    // Intentar rfcomm bind sin privilegios primero
-    let rfcomm_path = "/dev/rfcomm0".to_string();
-    let bind_result = Command::new("rfcomm")
-        .args(["bind", "0", mac, &channel.to_string()])
-        .output();
-
-    match bind_result {
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if !stderr.trim().is_empty() {
-                log_info!("bluetooth: rfcomm: {}", stderr.trim());
-            }
-            if std::path::Path::new(&rfcomm_path).exists() {
-                log_info!("bluetooth: dispositivo RFCOMM creado: {}", rfcomm_path);
-                // Configurar en modo raw para evitar que el TTY corrompa datos binarios
-                let _ = Command::new("stty")
-                    .args(["-F", &rfcomm_path, "raw", "-echo", "-echoe", "-echok"])
-                    .output();
-                return Ok(rfcomm_path);
-            }
-        }
-        Err(_) => {
-            log_info!("bluetooth: rfcomm bind falló, intentando con pkexec...");
-        }
+    let mut out = [0u8; 6];
+    for (i, p) in parts.iter().enumerate() {
+        out[i] = u8::from_str_radix(p, 16).ok()?;
     }
-
-    // Intentar con pkexec (GUI, no requiere terminal)
-    log_info!("bluetooth: solicitando permisos via pkexec...");
-    let pkexec_result = Command::new("pkexec")
-        .args(["rfcomm", "bind", "0", mac, &channel.to_string()])
-        .output();
-
-    match pkexec_result {
-        Ok(output) => {
-            if std::path::Path::new(&rfcomm_path).exists() {
-                log_info!("bluetooth: dispositivo RFCOMM creado via pkexec: {}", rfcomm_path);
-                return Ok(rfcomm_path);
-            }
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log_error!("bluetooth: pkexec rfcomm falló: {}", stderr.trim());
-        }
-        Err(e) => {
-            log_error!("bluetooth: pkexec falló: {}", e);
-        }
-    }
-
-    // Si todo falla, dar instrucciones claras
-    Err(format!(
-        "No se pudo crear {}. Solución única:
-         sudo usermod -a -G dialout $USER && reinicie sesión.
-         Luego reintente conectar.",
-        rfcomm_path
-    ))
+    out.reverse(); // bdaddr se almacena little-endian
+    Some(out)
 }
 
-/// Verifica si hay dispositivos Bluetooth RFCOMM disponibles.
-fn bluetooth_device_exists() -> Option<String> {
-    for i in 0..5 {
-        let path = format!("/dev/rfcomm{}", i);
-        if std::path::Path::new(&path).exists() {
-            log_info!("bluetooth: dispositivo RFCOMM encontrado: {}", path);
-            return Some(path);
+/// Consulta `bluetoothctl info <mac>` y dice si el dispositivo está conectado.
+fn bt_is_connected(mac: &str) -> bool {
+    let out = match Command::new("bluetoothctl").args(["info", mac]).output() {
+        Ok(o) => o,
+        Err(_) => return false,
+    };
+    String::from_utf8_lossy(&out.stdout).contains("Connected: yes")
+}
+
+/// Resetea el enlace BlueZ: disconnect + connect. Necesario cuando la sesión
+/// RFCOMM del kernel queda en estado stale (provoca EBUSY al conectar un
+/// socket nuevo). No requiere root.
+fn bt_reset_link(mac: &str) {
+    log_info!("bluetooth: reseteando enlace BlueZ para {} ...", mac);
+    let _ = Command::new("bluetoothctl").args(["disconnect", mac]).output();
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    let out = Command::new("bluetoothctl").args(["connect", mac]).output();
+    if let Ok(o) = out {
+        let s = String::from_utf8_lossy(&o.stdout);
+        if !s.trim().is_empty() {
+            log_info!("bluetooth: connect -> {}", s.trim());
+        }
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+}
+
+/// Busca entre los dispositivos emparejados alguno que esté conectado
+/// (la impresora). Devuelve su MAC para poder imprimir sin conexión manual.
+fn bt_find_connected_printer() -> Option<String> {
+    let out = Command::new("bluetoothctl")
+        .args(["devices", "Paired"])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if let Some(pos) = parts.iter().position(|p| *p == "Device") {
+            if let Some(mac) = parts.get(pos + 1) {
+                if mac.len() == 17 && mac.contains(':') && bt_is_connected(mac) {
+                    log_info!("bluetooth: impresora conectada detectada: {}", mac);
+                    return Some(mac.to_string());
+                }
+            }
         }
     }
     None
 }
+
+/// Envía datos crudos a la impresora por un socket RFCOMM cliente directo
+/// (AF_BLUETOOTH / BTPROTO_RFCOMM). NO requiere root ni nodos /dev/rfcomm.
+/// Si el connect devuelve EBUSY (sesión stale), resetea el enlace BlueZ y
+/// reintenta una vez.
+fn bt_rfcomm_send(mac: &str, channel: u8, data: &[u8]) -> Result<(), String> {
+    let bdaddr = bt_parse_mac(mac).ok_or_else(|| format!("MAC inválida: {}", mac))?;
+
+    let mut last_err = String::new();
+    for attempt in 0..2 {
+        if attempt == 1 {
+            bt_reset_link(mac);
+        }
+
+        let fd = unsafe { libc::socket(libc::AF_BLUETOOTH, libc::SOCK_STREAM, BTPROTO_RFCOMM) };
+        if fd < 0 {
+            last_err = format!("socket(): {}", std::io::Error::last_os_error());
+            continue;
+        }
+
+        // struct sockaddr_rc { sa_family_t rc_family; bdaddr_t rc_bdaddr; uint8_t rc_channel; }
+        // tamaño = 10 (family 2 + bdaddr 6 + channel 1 + padding 1)
+        let mut sa = [0u8; 10];
+        sa[0..2].copy_from_slice(&(libc::AF_BLUETOOTH as u16).to_ne_bytes());
+        sa[2..8].copy_from_slice(&bdaddr);
+        sa[8] = channel;
+
+        let rc = unsafe { libc::connect(fd, sa.as_ptr() as *const libc::sockaddr, 10) };
+        if rc < 0 {
+            let e = std::io::Error::last_os_error();
+            last_err = format!("connect RFCOMM: {}", e);
+            unsafe { libc::close(fd) };
+            if e.raw_os_error() == Some(16) {
+                // EBUSY: sesión RFCOMM stale del kernel
+                log_warn!("bt_rfcomm_send: EBUSY en connect (intento {}), reseteando enlace...", attempt + 1);
+                continue;
+            }
+            return Err(last_err);
+        }
+
+        // Conectado: enviamos los datos. File es solo un wrapper del fd,
+        // write_all funciona sobre cualquier fd (incluido un socket).
+        let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+        match file.write_all(data).and_then(|_| file.flush()) {
+            Ok(()) => {
+                log_info!(
+                    "bt_rfcomm_send: {} bytes enviados a {} canal {}",
+                    data.len(),
+                    mac,
+                    channel
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                last_err = format!("write RFCOMM: {}", e);
+            }
+        }
+        // file se cierra al salir del scope (drop -> close)
+    }
+
+    Err(format!(
+        "No se pudo enviar por Bluetooth a {}: {}",
+        mac, last_err
+    ))
+}
+
 // ─── COMANDOS TAURI ────────────────────────────────────────────────
 
 #[tauri::command]
@@ -272,9 +407,39 @@ fn check_printer_status() -> serde_json::Value {
     log_cmd!("check_printer_status");
 
     let hw_present = usb_device_present(IMPRESORA_VID, IMPRESORA_PID);
-    let bt_device = bluetooth_device_exists();
     let lp_device = usblp_device_exists();
-    let connected = (hw_present && lp_device.is_some()) || bt_device.is_some();
+    let usb_connected = hw_present && lp_device.is_some();
+
+    // Bluetooth: detectar impresora emparejada y conectada, o intentar
+    // reconexión automática con MACs guardadas previamente.
+    let mut bt_mac: Option<String> = None;
+    if !usb_connected {
+        bt_mac = bt_find_connected_printer();
+
+        if bt_mac.is_none() {
+            let persisted = load_persisted_macs();
+            if !persisted.is_empty() {
+                log_info!(
+                    "check_printer_status: intentando reconexion automatica a {} MAC(s) guardada(s)...",
+                    persisted.len()
+                );
+                for mac in &persisted {
+                    if bt_try_reconnect(mac) {
+                        bt_mac = Some(mac.clone());
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some(ref mac) = bt_mac {
+            if let Ok(mut stored) = LAST_BT_MAC.lock() {
+                *stored = Some(mac.clone());
+            }
+        }
+    }
+    let bt_connected = bt_mac.is_some();
+    let connected = usb_connected || bt_connected;
 
     if hw_present {
         log_info!(
@@ -310,10 +475,12 @@ fn check_printer_status() -> serde_json::Value {
 
     serde_json::json!({
         "connected": connected,
+        "usb_connected": usb_connected,
+        "bt_connected": bt_connected,
         "hw_present": hw_present,
         "lp_device": lp_device,
-        "bt_device": bt_device,
-        "connection_type": if bt_device.is_some() { "bluetooth" } else if hw_present && lp_device.is_some() { "usb" } else { "none" }
+        "bt_device": bt_mac,
+        "connection_type": if bt_connected { "bluetooth" } else if usb_connected { "usb" } else { "none" }
     })
 }
 
@@ -340,35 +507,43 @@ fn bluetooth_connect_printer(mac: String) -> Result<String, String> {
     // Emparejar primero
     bluetooth_pair(&mac)?;
 
-    // Guardar MAC para reconexión automática
+    // Guardar MAC para impresión por socket RFCOMM directo
     if let Ok(mut stored) = LAST_BT_MAC.lock() {
         *stored = Some(mac.clone());
     }
 
-    // Conectar RFCOMM canal 1 (SPP estándar para impresoras térmicas)
-    let device_path = bluetooth_connect_rfcomm(&mac, 1)?;
-    log_info!("bluetooth: impresora conectada en {}", device_path);
-    Ok(device_path)
+    // Persistir la MAC en disco para reconexión automática en próximos arranques
+    save_persisted_mac(&mac);
+
+    // Asegurar enlace BlueZ limpio. Si ya está conectado pero la sesión
+    // RFCOMM está stale, forzamos un reset para evitar EBUSY al imprimir.
+    if bt_is_connected(&mac) {
+        log_info!("bluetooth: ya conectado, reseteando enlace para sesión RFCOMM limpia...");
+        bt_reset_link(&mac);
+    } else {
+        let _ = Command::new("bluetoothctl").args(["connect", &mac]).output();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if !bt_is_connected(&mac) {
+            bt_reset_link(&mac);
+        }
+    }
+
+    log_info!("bluetooth: impresora lista (RFCOMM canal 1, socket directo sin root)");
+    Ok(format!("bluetooth:{}", mac))
 }
 
 #[tauri::command]
 fn bluetooth_disconnect_printer() -> Result<(), String> {
     log_cmd!("bluetooth_disconnect_printer");
 
-    for i in 0..5 {
-        let path = format!("/dev/rfcomm{}", i);
-        if std::path::Path::new(&path).exists() {
-            log_info!("bluetooth: liberando {} ...", path);
-            let output = Command::new("rfcomm")
-                .args(["release", &i.to_string()])
-                .output()
-                .map_err(|e| format!("Error liberando {}: {}", path, e))?;
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log_info!("bluetooth: rfcomm release: {}", stderr.trim());
-        }
+    let mac = LAST_BT_MAC.lock().ok().and_then(|m| m.clone());
+    if let Some(mac) = mac {
+        log_info!("bluetooth: desconectando {} ...", mac);
+        let _ = Command::new("bluetoothctl")
+            .args(["disconnect", &mac])
+            .output();
     }
 
-    // Limpiar MAC almacenada
     if let Ok(mut stored) = LAST_BT_MAC.lock() {
         *stored = None;
     }
@@ -544,55 +719,37 @@ fn write_to_printer(data: &[u8]) -> Result<(), String> {
     }
 
     // ── BLUETOOTH (fallback) ──────────────────────────────────────
-    // Si /dev/rfcomm0 existe pero da EBUSY, el enlace RFCOMM se cayó.
-    // Solución: liberar, re-vincular, y reintentar.
-    let mac_for_rebind = LAST_BT_MAC.lock().ok()
-        .and_then(|m| m.clone());
-
-    for attempt in 0..2 {
-        let bt_path = bluetooth_device_exists();
-        if bt_path.is_none() && attempt == 0 && mac_for_rebind.is_some() {
-            // No hay dispositivo. Reconectar desde cero.
-            let mac = mac_for_rebind.as_ref().unwrap();
-            log_info!("write_to_printer: reconectando BT a {}...", mac);
-            let _ = bluetooth_pair(mac);
-            let _ = bluetooth_connect_rfcomm(mac, 1);
-        }
-
-        if let Some(ref path) = bluetooth_device_exists() {
-            log_info!("write_to_printer: intentando Bluetooth {} (intento {})...", path, attempt + 1);
-            let _ = Command::new("stty").args(["-F", path, "raw", "-echo"]).output();
-
-            match std::fs::OpenOptions::new().write(true).open(path) {
-                Ok(mut file) => {
-                    file.write_all(data)
-                        .map_err(|e| format!("Error escribiendo en BT: {}", e))?;
-                    let _ = file.flush();
-                    log_info!("write_to_printer: enviado por Bluetooth a {}", path);
-                    return Ok(());
-                }
-                Err(e) => {
-                    let err_msg = format!("{}", e);
-                    log_warn!("write_to_printer: error abriendo {}: {}", path, err_msg);
-                    // Si es EBUSY o similar, liberar y re-vincular para el 2do intento
-                    if attempt == 0 && mac_for_rebind.is_some() {
-                        let mac = mac_for_rebind.as_ref().unwrap();
-                        log_info!("write_to_printer: liberando y re-vinculando rfcomm para {}...", mac);
-                        let _ = Command::new("rfcomm").args(["release", "0"]).output();
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                        let _ = bluetooth_connect_rfcomm(mac, 1);
-                    }
-                }
+    // Envío por socket RFCOMM directo (sin root, sin /dev/rfcomm).
+    // Si no hay MAC almacenada, intentamos autodetectar la impresora
+    // emparejada y conectada.
+    let mac = match LAST_BT_MAC.lock().ok().and_then(|m| m.clone()) {
+        Some(m) => m,
+        None => match bt_find_connected_printer() {
+            Some(m) => {
+                log_info!("write_to_printer: usando impresora BT autodetectada: {}", m);
+                m
             }
-        } else {
-            break; // no hay dispositivo, no reintentar
+            None => {
+                log_error!(
+                    "write_to_printer: no hay impresora USB ni MAC Bluetooth. \
+                     USB: sudo modprobe usblp. Bluetooth: use bluetooth_connect_printer."
+                );
+                return Err("No se encontro impresora. Verifique USB o Bluetooth.".to_string());
+            }
+        },
+    };
+
+    log_info!("write_to_printer: enviando por Bluetooth (RFCOMM) a {} ...", mac);
+    match bt_rfcomm_send(&mac, 1, data) {
+        Ok(()) => {
+            log_info!("write_to_printer: enviado por Bluetooth a {}", mac);
+            Ok(())
+        }
+        Err(e) => {
+            log_error!("write_to_printer: {}", e);
+            Err("No se encontro impresora. Verifique USB o Bluetooth.".to_string())
         }
     }
-
-    log_error!(
-        "write_to_printer: no se encontro dispositivo.          USB: sudo modprobe usblp. Bluetooth: use bluetooth_connect_printer."
-    );
-    Err("No se encontro impresora. Verifique USB o Bluetooth.".to_string())
 }
 
 // ─── PUNTO DE ENTRADA ──────────────────────────────────────────────

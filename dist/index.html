@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Impresor Térmico</title>
+    <link rel="stylesheet" href="src/styles.css">
+</head>
+<body>
+    <header>
+        <h1>Impresor Térmico</h1>
+        <div id="conn-panel">
+            <!-- Panel unificado USB / Bluetooth -->
+            <span id="conn-icon"></span>
+            <span id="conn-text">Verificando...</span>
+            <button id="bt-scan-btn" class="btn-hdr" style="display:none">Escanear BT</button>
+            <span id="bt-spinner" class="spinner" style="display:none"></span>
+            <select id="bt-device-list" style="display:none"></select>
+            <button id="bt-connect-btn" class="btn-hdr" style="display:none">Conectar</button>
+            <button id="bt-disconnect-btn" class="btn-hdr btn-hdr-off" style="display:none">Desconectar</button>
+        </div>
+    </header>
+
+    <main>
+        <div class="canvas-row">
+            <div class="height-control">
+                <label for="ctrl-height">Alto<br>(mm)</label>
+                <input type="number" id="ctrl-height" min="10" max="100" value="40">
+            </div>
+            <div id="canvas-container" title="Click para escribir">
+                <canvas id="sticker-canvas" tabindex="0"></canvas>
+            </div>
+        </div>
+
+        <div class="width-control">
+            <label for="ctrl-width">Ancho (mm)</label>
+            <input type="number" id="ctrl-width" min="10" max="58" value="58">
+        </div>
+
+        <div class="action-row">
+            <button id="btn-print" class="btn-primary">Imprimir</button>
+            <label class="switch-group">
+                <input type="checkbox" id="invert-checkbox">
+                <span>Invertir</span>
+            </label>
+            <button id="btn-clear" class="btn-secondary">Limpiar</button>
+        </div>
+    </main>
+
+    <footer>
+        <div class="footer-control">
+            <label for="ctrl-fontsize">Fuente (px)</label>
+            <input type="number" id="ctrl-fontsize" min="8" max="72" value="24">
+        </div>
+    </footer>
+
+    <script type="module" src="src/main.js"></script>
+</body>
+</html>

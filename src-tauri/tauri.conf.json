@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.sistema-impresion.app",
   "build": {
-    "frontendDist": "..",
-    "beforeDevCommand": "",
-    "beforeBuildCommand": ""
+    "frontendDist": "../dist",
+    "beforeDevCommand": "mkdir -p dist && cp index.html dist/ && cp -r src dist/",
+    "beforeBuildCommand": "mkdir -p dist && cp index.html dist/ && cp -r src dist/"
   },
   "app": {
     "withGlobalTauri": true,
