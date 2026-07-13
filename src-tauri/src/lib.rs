@@ -139,7 +139,9 @@ fn bt_try_reconnect(mac: &str) -> bool {
 const IMPRESORA_VID: &str = "0483";
 const IMPRESORA_PID: &str = "5720";
 // Offset horizontal para el comando BITMAP (idéntico al X_OFFSET de Python)
-const BITMAP_X_OFFSET: i32 = -30;
+const BITMAP_X_OFFSET: i32 = 10;
+// Offset vertical (margen superior) en dots (8 dots = 1 mm)
+const BITMAP_Y_OFFSET: i32 = 10;
 
 /// Verifica si el dispositivo USB con el VID/PID dado está físicamente conectado.
 /// Usa `lsusb` (igual que el sistema Python) — el método más fiable en Linux.
@@ -519,9 +521,12 @@ fn check_printer_status(
 ) -> serde_json::Value {
     log_cmd!("check_printer_status");
 
-    let usb_connected;
-    let hw_present;
+    let usb_connected: bool;
+    let hw_present: bool;
     let lp_device: Option<String>;
+
+    // Bluetooth: detectar impresora emparejada y conectada
+    let mut bt_mac: Option<String> = None;
 
     #[cfg(not(target_os = "android"))]
     {
@@ -534,43 +539,9 @@ fn check_printer_status(
         hw_present = false;
         lp_device = None;
         usb_connected = false;
-    }
 
-    // Bluetooth: detectar impresora emparejada y conectada, o intentar
-    // reconexión automática con MACs guardadas previamente.
-    let mut bt_mac: Option<String> = None;
+        state.request_bt_permission();
 
-    #[cfg(not(target_os = "android"))]
-    {
-        if !usb_connected {
-            bt_mac = bt_find_connected_printer();
-
-            if bt_mac.is_none() {
-                let persisted = load_persisted_macs();
-                if !persisted.is_empty() {
-                    log_info!(
-                        "check_printer_status: intentando reconexion automatica a {} MAC(s) guardada(s)...",
-                        persisted.len()
-                    );
-                    for mac in &persisted {
-                        if bt_try_reconnect(mac) {
-                            bt_mac = Some(mac.clone());
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if let Some(ref mac) = bt_mac {
-                if let Ok(mut stored) = LAST_BT_MAC.lock() {
-                    *stored = Some(mac.clone());
-                }
-                let _ = bt_preconnect_socket(mac, 1);
-            }
-        }
-    }
-    #[cfg(target_os = "android")]
-    {
         if let Ok(status) = state.bluetooth_status() {
             if status.get("connected").and_then(|c| c.as_bool()).unwrap_or(false) {
                 bt_mac = Some("android-bt".to_string());
@@ -634,24 +605,34 @@ fn check_printer_status(
 fn bluetooth_scan_devices(
     state: tauri::State<'_, PrinterPlugin>,
     timeout_secs: Option<u64>,
-) -> Vec<serde_json::Value> {
+) -> serde_json::Value {
     log_cmd!("bluetooth_scan_devices");
 
     #[cfg(target_os = "android")]
     {
         match state.bluetooth_scan() {
             Ok(resp) => {
-                let devices: Vec<serde_json::Value> = resp
+                let devices = resp
                     .get("devices")
                     .and_then(|d| d.as_array())
                     .cloned()
                     .unwrap_or_default();
                 log_info!("bluetooth: {} dispositivos via plugin", devices.len());
-                return devices;
+                return serde_json::json!({
+                    "devices": devices,
+                    "_diag": {
+                        "adapter_available": resp.get("adapter_available"),
+                        "adapter_enabled": resp.get("adapter_enabled"),
+                        "adapter_name": resp.get("adapter_name"),
+                        "adapter_address": resp.get("adapter_address"),
+                        "bonded_device_count": resp.get("bonded_device_count"),
+                        "error": resp.get("error"),
+                    }
+                });
             }
             Err(e) => {
                 log_error!("bluetooth scan via plugin: {}", e);
-                return vec![];
+                return serde_json::json!({"devices": [], "_error": e});
             }
         }
     }
@@ -659,13 +640,13 @@ fn bluetooth_scan_devices(
     #[cfg(not(target_os = "android"))]
     {
         let timeout = timeout_secs.unwrap_or(10);
-        let devices = bluetooth_scan(timeout);
-        devices
+        let devices: Vec<serde_json::Value> = bluetooth_scan(timeout)
             .into_iter()
             .map(|(mac, name)| {
                 serde_json::json!({"mac": mac, "name": name})
             })
-            .collect()
+            .collect();
+        serde_json::json!({"devices": devices})
     }
 }
 
@@ -884,7 +865,7 @@ fn imprimir_etiqueta_raw(
 
     write!(
         &mut tspl,
-        "CLS\nSIZE {} mm,{} mm\nGAP 0,0\nDENSITY 15\n",
+        "CLS\nSIZE {} mm,{} mm\nGAP 0,0\nSPEED 1.5\nDENSITY 15\n",
         width_mm, height_mm
     )
     .map_err(|e| {
@@ -894,8 +875,8 @@ fn imprimir_etiqueta_raw(
 
     write!(
         &mut tspl,
-        "BITMAP {},0,{},{},0,",
-        BITMAP_X_OFFSET, width_bytes, height_dots
+        "BITMAP {},{},{},{},0,",
+        BITMAP_X_OFFSET, BITMAP_Y_OFFSET, width_bytes, height_dots
     )
     .map_err(|e| {
         log_error!("fallo al escribir comando BITMAP: {}", e);
@@ -905,7 +886,7 @@ fn imprimir_etiqueta_raw(
     tspl.extend_from_slice(&buffer);
 
     let n = if copies == 0 { 1 } else { copies };
-    write!(&mut tspl, "\nPRINT {}\n", n).map_err(|e| {
+    write!(&mut tspl, "\nPRINT {}", n).map_err(|e| {
         log_error!("fallo al escribir comando PRINT: {}", e);
         format!("Error PRINT: {}", e)
     })?;

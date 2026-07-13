@@ -1,15 +1,80 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
+// ─── DEBUG CONSOLE ───────────────────────────────────────────────────
+var debugVisible = true;
+var debugLines = [];
+
+function debugLog(msg, cls) {
+    cls = cls || '';
+    var now = new Date();
+    var time = now.getHours().toString().padStart(2,'0') + ':' +
+               now.getMinutes().toString().padStart(2,'0') + ':' +
+               now.getSeconds().toString().padStart(2,'0');
+    console.log('[' + time + ']', msg);
+    debugLines.push({ time: time, msg: String(msg), cls: cls });
+    if (debugLines.length > 200) debugLines.shift();
+    renderDebugLog();
+}
+function debugErr(msg)  { debugLog(msg, 'log-err'); }
+function debugOk(msg)   { debugLog(msg, 'log-ok'); }
+function debugWarn(msg) { debugLog(msg, 'log-warn'); }
+function debugInfo(msg) { debugLog(msg, 'log-info'); }
+function debugInvoke(cmd, args) {
+    debugLog('▶ ' + cmd + (args ? ' ' + JSON.stringify(args).substring(0,120) : ''), 'log-invoke');
+}
+
+function renderDebugLog() {
+    var el = document.getElementById('debug-log');
+    if (!el) return;
+    var html = '';
+    for (var i = 0; i < debugLines.length; i++) {
+        var l = debugLines[i];
+        html += '<div class="log-line"><span class="log-time">' + l.time + '</span><span class="log-msg ' + l.cls + '">' + esc(l.msg) + '</span></div>';
+    }
+    el.innerHTML = html;
+    el.scrollTop = el.scrollHeight;
+}
+function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+document.getElementById('debug-tab').addEventListener('click', function() {
+    var con = document.getElementById('debug-console');
+    var tab = document.getElementById('debug-tab');
+    if (debugVisible) {
+        con.style.display = 'none';
+        tab.textContent = 'LOG';
+        tab.classList.remove('hidden');
+    } else {
+        con.style.display = 'flex';
+        tab.textContent = '▼';
+    }
+    debugVisible = !debugVisible;
+});
+document.getElementById('debug-toggle').addEventListener('click', function() {
+    var con = document.getElementById('debug-console');
+    var tab = document.getElementById('debug-tab');
+    con.style.display = 'none';
+    tab.textContent = 'LOG';
+    tab.classList.remove('hidden');
+    debugVisible = false;
+});
+document.getElementById('debug-clear').addEventListener('click', function() {
+    debugLines = [];
+    renderDebugLog();
+});
+
 // ─── LOGS ───────────────────────────────────────────────────────────
-function logInfo(msg)  { console.log('[front]', msg); }
-function logWarn(msg)  { console.warn('[front]', msg); }
-function logError(msg) { console.error('[front]', msg); }
+function logInfo(msg)  { debugInfo(msg); }
+function logWarn(msg)  { debugWarn(msg); }
+function logError(msg) { debugErr(msg); }
 
 logInfo('main.js cargado');
 
-// ─── TOAST (reemplaza alert nativo que muestra URL en la cabecera) ──
+// ─── TOAST ──────────────────────────────────────────────────────────
 function showToast(msg, isError) {
+    debugLog((isError ? 'TOAST ERR: ' : 'TOAST: ') + msg, isError ? 'log-err' : 'log-ok');
     var overlay = document.getElementById('toast-overlay');
     overlay.innerHTML = '';
     var box = document.createElement('div');
@@ -28,7 +93,88 @@ function showToast(msg, isError) {
     overlay.style.display = 'flex';
 }
 
-// ─── PERSISTENCIA (localStorage) ────────────────────────────────────
+// ─── invoke wrapper ──────────────────────────────────────────────────
+async function invokeDebug(cmd, args) {
+    debugInvoke(cmd, args);
+    var started = Date.now();
+    try {
+        var result = await invoke(cmd, args);
+        var elapsed = Date.now() - started;
+        debugOk('✔ ' + cmd + ' (' + elapsed + 'ms) → ' + (result !== undefined ? JSON.stringify(result).substring(0,100) : 'void'));
+        return result;
+    } catch(e) {
+        var elapsed = Date.now() - started;
+        debugErr('✘ ' + cmd + ' (' + elapsed + 'ms) → ' + String(e));
+        throw e;
+    }
+}
+
+// ─── TECLADO CANVAS (textarea overlay) ───────────────────────────────
+var textLines    = [''];
+var cursorLine   = 0;
+var cursorCol    = 0;
+var cursorVisible = true;
+var cursorTimer  = null;
+var canvasFocused = false;
+
+const keyboardInput = document.getElementById('keyboard-input');
+const canvas = document.getElementById('sticker-canvas');
+
+function getCtx() { return canvas.getContext('2d'); }
+
+function syncCanvasToTextarea() {
+    keyboardInput.value = textLines.join('\n');
+}
+
+function syncTextareaToCanvas() {
+    var val = keyboardInput.value;
+    var newLines = val.split('\n');
+    textLines = newLines;
+    var pos = keyboardInput.selectionStart;
+    cursorLine = val.substring(0, pos).split('\n').length - 1;
+    var lineStart = val.lastIndexOf('\n', pos - 1) + 1;
+    cursorCol = pos - lineStart;
+    drawPreview();
+}
+
+keyboardInput.addEventListener('input', function() {
+    syncTextareaToCanvas();
+});
+keyboardInput.addEventListener('click', function() {
+    syncTextareaToCanvas();
+    startBlink();
+});
+keyboardInput.addEventListener('keyup', function() {
+    syncTextareaToCanvas();
+});
+
+canvas.addEventListener('click', function(e) {
+    keyboardInput.focus();
+    canvasFocused = true;
+    startBlink();
+    drawPreview();
+    e.preventDefault();
+});
+
+canvas.addEventListener('touchstart', function(e) {
+    keyboardInput.focus();
+    canvasFocused = true;
+    startBlink();
+    drawPreview();
+});
+
+keyboardInput.addEventListener('focus', function() {
+    canvasFocused = true;
+    startBlink();
+    drawPreview();
+});
+keyboardInput.addEventListener('blur', function() {
+    canvasFocused = false;
+    stopBlink();
+    drawPreview();
+});
+
+// ─── PERSISTENCIA ────────────────────────────────────────────────────
 const LS_W = 'label_width_mm';
 const LS_H = 'label_height_mm';
 const LS_F = 'label_fontsize';
@@ -53,7 +199,6 @@ const ctrlWidth       = document.getElementById('ctrl-width');
 const ctrlHeight      = document.getElementById('ctrl-height');
 const fontSizeInput   = document.getElementById('ctrl-fontsize');
 const copiesInput     = document.getElementById('ctrl-copies');
-const canvas          = document.getElementById('sticker-canvas');
 const invertCheckbox  = document.getElementById('invert-checkbox');
 const connIcon        = document.getElementById('conn-icon');
 const connText        = document.getElementById('conn-text');
@@ -63,21 +208,11 @@ const btConnectBtn    = document.getElementById('bt-connect-btn');
 const btDisconnectBtn = document.getElementById('bt-disconnect-btn');
 const btSpinner       = document.getElementById('bt-spinner');
 
-// Inicializar controles con valores persistidos
 ctrlWidth.value     = widthMm;
 ctrlHeight.value    = heightMm;
 fontSizeInput.value = fontSize;
 
-// ─── TEXTO SOBRE CANVAS ─────────────────────────────────────────────
-let textLines    = [''];
-let cursorLine   = 0;
-let cursorCol    = 0;
-let cursorVisible = true;
-let cursorTimer  = null;
-let canvasFocused = false;
-
-function getCtx() { return canvas.getContext('2d'); }
-
+// ─── CONTROLES NUMÉRICOS ─────────────────────────────────────────────
 function syncWidth(value) {
     widthMm = Math.max(10, Math.min(58, parseInt(value) || 58));
     ctrlWidth.value = widthMm;
@@ -96,29 +231,18 @@ function syncFontSize(value) {
     saveNum(LS_F, fontSize);
     drawPreview();
 }
-function onNumberInput(e, commitFn, fallback) {
-    var v = parseInt(e.target.value);
-    if (!isNaN(v)) {
-        commitFn(v);
-    }
-}
-function onNumberChange(e, syncFn, fallback) {
-    syncFn(e.target.value);
-}
-ctrlWidth.addEventListener('input',     e => onNumberInput(e, v => { widthMm = v; updateCanvas(); }, 58));
-ctrlWidth.addEventListener('change',    e => onNumberChange(e, syncWidth, 58));
-ctrlWidth.addEventListener('blur',      e => onNumberChange(e, syncWidth, 58));
-ctrlHeight.addEventListener('input',    e => onNumberInput(e, v => { heightMm = v; updateCanvas(); }, 40));
-ctrlHeight.addEventListener('change',   e => onNumberChange(e, syncHeight, 40));
-ctrlHeight.addEventListener('blur',     e => onNumberChange(e, syncHeight, 40));
-fontSizeInput.addEventListener('input', e => onNumberInput(e, v => { fontSize = v; drawPreview(); }, 24));
-fontSizeInput.addEventListener('change',e => onNumberChange(e, syncFontSize, 24));
-fontSizeInput.addEventListener('blur',  e => onNumberChange(e, syncFontSize, 24));
-copiesInput.addEventListener('input',   e => { var v = parseInt(e.target.value); if (!isNaN(v) && v >= 1 && v <= 99) { /* solo validamos visual */ } });
+ctrlWidth.addEventListener('input',     e => { var v = parseInt(e.target.value); if (!isNaN(v)) { widthMm = v; updateCanvas(); } });
+ctrlWidth.addEventListener('change',    e => syncWidth(e.target.value));
+ctrlWidth.addEventListener('blur',      e => syncWidth(e.target.value));
+ctrlHeight.addEventListener('input',    e => { var v = parseInt(e.target.value); if (!isNaN(v)) { heightMm = v; updateCanvas(); } });
+ctrlHeight.addEventListener('change',   e => syncHeight(e.target.value));
+ctrlHeight.addEventListener('blur',     e => syncHeight(e.target.value));
+fontSizeInput.addEventListener('input', e => { var v = parseInt(e.target.value); if (!isNaN(v)) { fontSize = v; drawPreview(); } });
+fontSizeInput.addEventListener('change',e => syncFontSize(e.target.value));
+fontSizeInput.addEventListener('blur',  e => syncFontSize(e.target.value));
 copiesInput.addEventListener('change',  e => { var v = Math.max(1, Math.min(99, parseInt(e.target.value) || 1)); copiesInput.value = v; });
 copiesInput.addEventListener('blur',    e => { var v = Math.max(1, Math.min(99, parseInt(e.target.value) || 1)); copiesInput.value = v; });
 
-// ─── STEPPER BOTONES (+/-) ───────────────────────────────────────────
 document.addEventListener('click', function(e) {
     var btn = e.target.closest('.stepper-btn');
     if (!btn) return;
@@ -174,71 +298,45 @@ function drawCur(ctx, x, y) { ctx.fillStyle = '#000'; ctx.fillRect(x, y, 2, Math
 function startBlink() { stopBlink(); cursorVisible = true; cursorTimer = setInterval(() => { cursorVisible = !cursorVisible; drawPreview(); }, 530); }
 function stopBlink()  { if (cursorTimer) { clearInterval(cursorTimer); cursorTimer = null; } cursorVisible = false; }
 
-// ─── TECLADO CANVAS ─────────────────────────────────────────────────
-canvas.addEventListener('keydown', function(e) {
-    if (!canvasFocused) return;
-    var h = true;
-    if (e.key === 'Enter') {
-        var cur = textLines[cursorLine]||''; textLines[cursorLine] = cur.substring(0, cursorCol);
-        textLines.splice(cursorLine+1, 0, cur.substring(cursorCol)); cursorLine++; cursorCol = 0;
-    } else if (e.key === 'Backspace') {
-        if (cursorCol > 0) { var ln = textLines[cursorLine]||''; textLines[cursorLine] = ln.substring(0,cursorCol-1)+ln.substring(cursorCol); cursorCol--; }
-        else if (cursorLine > 0) { var pl = (textLines[cursorLine-1]||'').length; textLines[cursorLine-1] += (textLines[cursorLine]||''); textLines.splice(cursorLine,1); cursorLine--; cursorCol = pl; }
-    } else if (e.key === 'ArrowLeft')  { if (cursorCol>0) cursorCol--; else if (cursorLine>0) { cursorLine--; cursorCol = (textLines[cursorLine]||'').length; } }
-    else if (e.key === 'ArrowRight') { var ln = (textLines[cursorLine]||'').length; if (cursorCol<ln) cursorCol++; else if (cursorLine<textLines.length-1) { cursorLine++; cursorCol=0; } }
-    else if (e.key === 'ArrowUp')    { if (cursorLine>0) { cursorLine--; var l=(textLines[cursorLine]||'').length; if (cursorCol>l) cursorCol=l; } }
-    else if (e.key === 'ArrowDown')  { if (cursorLine<textLines.length-1) { cursorLine++; var l=(textLines[cursorLine]||'').length; if (cursorCol>l) cursorCol=l; } }
-    else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) { var ln = textLines[cursorLine]||''; textLines[cursorLine] = ln.substring(0,cursorCol)+e.key+ln.substring(cursorCol); cursorCol++; }
-    else h = false;
-    if (h) { e.preventDefault(); startBlink(); drawPreview(); }
-});
-canvas.addEventListener('focus', () => { canvasFocused = true; startBlink(); drawPreview(); });
-canvas.addEventListener('blur',  () => { canvasFocused = false; stopBlink(); drawPreview(); });
-canvas.addEventListener('click', () => canvas.focus());
-
-// ─── PANEL DE CONEXIÓN (USB prioritario, BT manual) ─────────────────
+// ─── PANEL DE CONEXIÓN ──────────────────────────────────────────────
 function updateConnUI() {
-    // Ocultar todo primero
     btScanBtn.style.display = 'none';
     btDeviceList.style.display = 'none';
     btConnectBtn.style.display = 'none';
     btDisconnectBtn.style.display = 'none';
 
     if (usbConnected) {
-        // USB activo: no mostrar Bluetooth
-        connIcon.textContent = '🔌';
+        connIcon.textContent = 'USB';
         connText.textContent = 'USB: Conectado';
         connText.className = 'usb-ok';
         btConnected = false;
     } else if (btConnected) {
-        // Bluetooth conectado manualmente
-        connIcon.textContent = '📶';
+        connIcon.textContent = 'BT';
         connText.textContent = 'Bluetooth: Conectado';
         connText.className = 'bt-ok';
         btDisconnectBtn.style.display = 'inline-block';
     } else if (btDevices.length > 0) {
-        // Bluetooth escaneado, lista disponible
-        connIcon.textContent = '📶';
+        connIcon.textContent = 'BT';
         connText.textContent = 'USB no detectado. Seleccionar BT:';
         connText.className = 'bt-fail';
         btScanBtn.style.display = 'inline-block';
         btDeviceList.style.display = 'inline-block';
         btConnectBtn.style.display = 'inline-block';
     } else {
-        // Sin USB, sin BT escaneado
-        connIcon.textContent = '❌';
+        connIcon.textContent = '✗';
         connText.textContent = 'USB: No detectado';
         connText.className = 'usb-fail';
         btScanBtn.style.display = 'inline-block';
         btScanBtn.textContent = 'Escanear BT';
     }
+    debugInfo('UI → usb=' + usbConnected + ' bt=' + btConnected + ' devices=' + btDevices.length);
 }
 
-// ─── EVENTOS USB DESDE RUST ─────────────────────────────────────────
+// ─── USB LISTENER ────────────────────────────────────────────────────
 async function setupUsbListener() {
     await listen('usb-status', function(event) {
         usbConnected = event.payload.usb_connected;
-        logInfo('Evento usb-status: connected=' + usbConnected + ' device=' + event.payload.usb_device);
+        debugInfo('Evento usb-status: connected=' + usbConnected + ' device=' + event.payload.usb_device);
         updateConnUI();
     });
 }
@@ -250,23 +348,39 @@ async function btScan() {
     btScanBtn.disabled = true;
     btScanBtn.style.display = 'none';
     btSpinner.style.display = 'inline-block';
+    debugLog('=== INICIANDO ESCANEO BLUETOOTH ===', 'log-info');
 
     try {
-        var result = await invoke('bluetooth_scan_devices', { timeoutSecs: 10 });
-        btDevices = result;
+        var result = await invokeDebug('bluetooth_scan_devices', { timeoutSecs: 10 });
+        btDevices = result.devices || [];
+
+        // Mostrar diagnostico si existe
+        if (result._diag) {
+            var d = result._diag;
+            debugInfo('BT DIAG: adapter=' + d.adapter_available +
+                      ' enabled=' + d.adapter_enabled +
+                      ' bonded=' + d.bonded_device_count +
+                      ' name=' + d.adapter_name +
+                      ' addr=' + d.adapter_address +
+                      ' error=' + (d.error || 'none'));
+        }
+        if (result._error) {
+            debugErr('BT SCAN ERROR: ' + result._error);
+        }
+
         btDeviceList.innerHTML = '<option value="" style="color:#000">-- Seleccionar --</option>';
-        result.forEach(d => {
+        btDevices.forEach(d => {
             var o = document.createElement('option');
             o.value = d.mac;
             o.textContent = d.name + ' (' + d.mac + ')';
             o.style.color = '#000';
             btDeviceList.appendChild(o);
         });
-        logInfo('BT: ' + result.length + ' dispositivos');
-        connText.textContent = result.length + ' dispositivo(s) encontrado(s)';
+        debugOk('BT: ' + btDevices.length + ' dispositivos encontrados');
+        connText.textContent = btDevices.length + ' dispositivo(s) encontrado(s)';
     } catch(e) {
-        logError('BT scan error: ' + e);
-        connText.textContent = 'Error al escanear BT'; connText.className = 'bt-fail';
+        debugErr('BT scan error: ' + e);
+        connText.textContent = 'Error al escanear'; connText.className = 'bt-fail';
     }
 
     btSpinner.style.display = 'none';
@@ -277,18 +391,26 @@ async function btScan() {
 
 async function btConnect() {
     var mac = btDeviceList.value; if (!mac) return;
-    logInfo('Conectando BT: ' + mac);
+    debugLog('=== INICIANDO CONEXION BLUETOOTH a ' + mac + ' ===', 'log-info');
     connText.textContent = 'Conectando BT...';
+    btConnectBtn.disabled = true;
     try {
-        await invoke('bluetooth_connect_printer', { mac: mac });
+        var result = await invokeDebug('bluetooth_connect_printer', { mac: mac });
         btConnected = true;
-        logInfo('BT conectado');
-    } catch(e) { logError('BT connect error: ' + e); connText.textContent = 'Error: ' + e; connText.className = 'bt-fail'; btConnected = false; }
+        debugOk('BT conectado a ' + mac);
+    } catch(e) {
+        debugErr('BT connect error: ' + e);
+        connText.textContent = 'Error: ' + String(e).substring(0, 60);
+        connText.className = 'bt-fail';
+        btConnected = false;
+    }
+    btConnectBtn.disabled = false;
     updateConnUI();
 }
 
 async function btDisconnect() {
-    try { await invoke('bluetooth_disconnect_printer'); } catch(_) {}
+    debugLog('=== DESCONECTANDO BLUETOOTH ===', 'log-info');
+    try { await invokeDebug('bluetooth_disconnect_printer'); } catch(e) { debugErr('BT disconnect error: ' + e); }
     btConnected = false; btDevices = []; btDeviceList.innerHTML = '';
     updateConnUI();
 }
@@ -299,7 +421,7 @@ btDisconnectBtn.addEventListener('click', btDisconnect);
 
 // ─── IMPRESIÓN ──────────────────────────────────────────────────────
 async function ejecutarImpresion() {
-    logInfo('=== IMPRIMIENDO ===');
+    debugLog('=== IMPRIMIENDO ===', 'log-info');
     var wasFocused = canvasFocused; canvasFocused = false; cursorVisible = false;
     drawPreview();
     var b64 = canvas.toDataURL('image/png').split(',')[1];
@@ -311,36 +433,53 @@ async function ejecutarImpresion() {
     copiesInput.value = copies;
 
     try {
-        await invoke('imprimir_etiqueta_raw', { base64Image: b64, widthMm: widthMm, heightMm: heightMm, invert: invertCheckbox.checked, copies: copies });
-        logInfo('impresion OK');
+        await invokeDebug('imprimir_etiqueta_raw', { base64Image: b64, widthMm: widthMm, heightMm: heightMm, invert: invertCheckbox.checked, copies: copies });
+        debugOk('Impresion OK');
         showToast('Impresión enviada');
-    } catch(e) { logError('impresion FAIL: ' + e); showToast('Error al imprimir. Verifique la conexion.', true); }
+    } catch(e) {
+        debugErr('Impresion FAIL: ' + e);
+        showToast('Error al imprimir. Verifique la conexion.', true);
+    }
 }
 
 // ─── BOTONES ────────────────────────────────────────────────────────
-document.getElementById('btn-clear').addEventListener('click', () => { textLines = ['']; cursorLine = 0; cursorCol = 0; drawPreview(); canvas.focus(); });
+document.getElementById('btn-clear').addEventListener('click', () => {
+    textLines = [''];
+    cursorLine = 0; cursorCol = 0;
+    syncCanvasToTextarea();
+    drawPreview();
+    keyboardInput.focus();
+});
 document.getElementById('btn-print').addEventListener('click', ejecutarImpresion);
 
 // ─── INICIO ─────────────────────────────────────────────────────────
 async function init() {
     copiesInput.value = 1;
     updateCanvas();
+    syncCanvasToTextarea();
     setupUsbListener();
 
-    // Consulta inicial: el backend dice el estado real
-    // (incluye intento de reconexión automática a MACs Bluetooth persistidas)
+    // Listener para diagnosticos Bluetooth emitidos desde Rust
+    await listen('bt-scan-diag', function(event) {
+        var p = event.payload;
+        debugInfo('BT DIAG: adapter=' + p.adapter_available + ' enabled=' + p.adapter_enabled +
+                  ' bonded=' + p.bonded_device_count + ' name=' + p.adapter_name +
+                  ' addr=' + p.adapter_address + ' error=' + (p.error || 'none'));
+    });
+
+    debugLog('=== INICIANDO APP ===', 'log-info');
     connText.textContent = 'Verificando conexiones...';
     connText.className = 'bt-reconnect';
     try {
-        var s = await invoke('check_printer_status');
+        var s = await invokeDebug('check_printer_status');
         usbConnected = s.usb_connected;
         btConnected  = s.bt_connected;
-        logInfo('Estado inicial: USB=' + usbConnected + ' BT=' + btConnected);
+        debugInfo('Estado inicial: USB=' + usbConnected + ' BT=' + btConnected + ' hw=' + s.hw_present + ' type=' + s.connection_type + ' btDevice=' + s.bt_device);
         if (btConnected && s.bt_device) {
-            logInfo('BT auto-reconectado a: ' + s.bt_device);
+            debugInfo('BT auto-reconectado a: ' + s.bt_device);
         }
-    } catch(_) {
-        logWarn('No se pudo consultar estado inicial');
+    } catch(e) {
+        debugErr('No se pudo consultar estado inicial: ' + e);
     }
     updateConnUI();
 }

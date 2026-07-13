@@ -33,6 +33,7 @@
             </div>
             <div id="canvas-container" title="Click para escribir">
                 <canvas id="sticker-canvas" tabindex="0"></canvas>
+                <textarea id="keyboard-input" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
             </div>
         </div>
 
@@ -75,6 +76,17 @@
     </footer>
 
     <div id="toast-overlay" style="display:none"></div>
+
+    <!-- Debug Console -->
+    <div id="debug-console" style="display:none">
+        <div id="debug-header">
+            <span>DEBUG</span>
+            <button id="debug-toggle">_</button>
+            <button id="debug-clear">Clear</button>
+        </div>
+        <div id="debug-log"></div>
+    </div>
+    <div id="debug-tab">LOG</div>
 
     <script type="module" src="src/main.js"></script>
 </body>

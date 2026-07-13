@@ -170,40 +170,69 @@ class PrinterPlugin(private val context: Activity) : Plugin(context) {
 
     @Command
     fun bluetoothScan(invoke: Invoke) {
-        val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
-        if (adapter == null || !adapter.isEnabled) {
-            invoke.reject("Bluetooth no disponible o desactivado")
-            return
-        }
+        try {
+            val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
 
-        val devices = adapter.bondedDevices
-        val list = org.json.JSONArray()
-        for (d in devices) {
-            val obj = org.json.JSONObject()
-            obj.put("mac", d.address)
-            obj.put("name", d.name ?: "Desconocido")
-            list.put(obj)
-        }
+            val resp = JSObject()
+            resp.put("adapter_available", adapter != null)
+            resp.put("adapter_enabled", adapter?.isEnabled ?: false)
+            resp.put("adapter_name", adapter?.name ?: "null")
+            resp.put("adapter_address", adapter?.address ?: "null")
 
-        val resp = JSObject()
-        resp.put("devices", list)
-        invoke.resolve(resp)
+            if (adapter == null) {
+                resp.put("error", "BluetoothAdapter es null")
+                invoke.resolve(resp)
+                return
+            }
+            if (!adapter.isEnabled) {
+                resp.put("error", "Bluetooth esta desactivado")
+                invoke.resolve(resp)
+                return
+            }
+
+            val devices = adapter.bondedDevices
+            resp.put("bonded_device_count", devices.size)
+
+            val list = org.json.JSONArray()
+            for (d in devices) {
+                val obj = org.json.JSONObject()
+                obj.put("mac", d.address)
+                obj.put("name", d.name ?: "Desconocido")
+                list.put(obj)
+            }
+
+            resp.put("devices", list)
+            invoke.resolve(resp)
+        } catch (e: SecurityException) {
+            val resp = JSObject()
+            resp.put("error", "SecurityException: ${e.message}")
+            resp.put("devices", org.json.JSONArray())
+            invoke.resolve(resp)
+        } catch (e: Exception) {
+            val resp = JSObject()
+            resp.put("error", "Exception: ${e.message}")
+            resp.put("devices", org.json.JSONArray())
+            invoke.resolve(resp)
+        }
     }
 
     @Command
     fun bluetoothConnect(invoke: Invoke) {
-        val mac = invoke.getArgs().optString("mac")?.takeIf { it.isNotEmpty() } ?: run {
-            invoke.reject("Direccion MAC requerida")
-            return
-        }
-
-        val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
-        val device = adapter?.getRemoteDevice(mac) ?: run {
-            invoke.reject("Dispositivo no encontrado: $mac")
-            return
-        }
-
         try {
+            val mac = invoke.getArgs().optString("mac")?.takeIf { it.isNotEmpty() } ?: run {
+                invoke.reject("Direccion MAC requerida")
+                return
+            }
+
+            val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+            if (adapter == null || !adapter.isEnabled) {
+                invoke.reject("Bluetooth no disponible o desactivado")
+                return
+            }
+            adapter.cancelDiscovery()
+
+            val device = adapter.getRemoteDevice(mac)
+
             btSocket?.close()
             btSocket = device.createRfcommSocketToServiceRecord(SPP_UUID)
             btSocket?.connect()
@@ -213,6 +242,8 @@ class PrinterPlugin(private val context: Activity) : Plugin(context) {
             resp.put("connected", true)
             resp.put("mac", mac)
             invoke.resolve(resp)
+        } catch (e: SecurityException) {
+            invoke.reject("Permiso Bluetooth denegado. Conceda el permiso en Ajustes > Apps > Sistema Impresion.")
         } catch (e: Exception) {
             invoke.reject("Error conectando Bluetooth: ${e.message}")
         }
@@ -254,8 +285,12 @@ class PrinterPlugin(private val context: Activity) : Plugin(context) {
 
     @Command
     fun bluetoothStatus(invoke: Invoke) {
-        val resp = JSObject()
-        resp.put("connected", btSocket?.isConnected == true)
-        invoke.resolve(resp)
+        try {
+            val resp = JSObject()
+            resp.put("connected", btSocket?.isConnected == true)
+            invoke.resolve(resp)
+        } catch (e: Exception) {
+            invoke.reject("Error consultando estado Bluetooth: ${e.message}")
+        }
     }
 }

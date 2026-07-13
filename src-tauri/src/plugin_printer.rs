@@ -9,9 +9,29 @@ pub struct PrinterPlugin {
     handle: tauri::plugin::PluginHandle<tauri::Wry>,
 }
 
-// ─── Android: registra el plugin y delega al Kotlin PrinterPlugin.kt ─
+// ─── Android ────────────────────────────────────────────────────────
 #[cfg(target_os = "android")]
 impl PrinterPlugin {
+    pub fn request_bt_permission(&self) {
+        match self.handle.run_mobile_plugin::<Value>("checkPermissions", ()) {
+            Ok(status) => {
+                let state = status
+                    .get("bluetooth")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if state == "granted" {
+                    return;
+                }
+            }
+            Err(_) => {}
+        }
+
+        let _ = self.handle.run_mobile_plugin::<Value>(
+            "requestPermissions",
+            serde_json::json!({ "permissions": ["bluetooth"] }),
+        );
+    }
+
     pub fn bluetooth_scan(&self) -> Result<Value, String> {
         self.handle
             .run_mobile_plugin("bluetoothScan", ())
