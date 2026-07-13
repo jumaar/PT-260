@@ -6,6 +6,7 @@ body {
     color: #e0e0e0;
     display: flex; flex-direction: column;
     min-height: 100vh;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 /* ─── HEADER ─────────────────────────── */
@@ -187,6 +188,7 @@ main {
 /* ─── FOOTER ─────────────────────────── */
 footer {
     background: #16213e; padding: 10px 24px;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
     border-top: 1px solid #0f3460;
     display: flex; justify-content: center; gap: 24px; flex-shrink: 0;
 }

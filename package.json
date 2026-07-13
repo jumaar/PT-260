@@ -6,7 +6,7 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build:apk": "tauri android build --apk --target aarch64 --target armv7 && mkdir -p release && cp src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk release/",
+    "build:apk": "tauri android build --apk && APK=src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk && mkdir -p release && cp \"$APK\" release/ && echo 'APK copiado a release/app-universal-release.apk'",
     "build:deb": "tauri build --bundles deb && mkdir -p release && cp src-tauri/target/release/bundle/deb/sistema-impresion_*_amd64.deb release/"
   },
   "devDependencies": {

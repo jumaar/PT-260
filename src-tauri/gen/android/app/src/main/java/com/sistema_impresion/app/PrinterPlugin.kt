@@ -57,7 +57,11 @@ class PrinterPlugin(private val context: Activity) : Plugin(context) {
 
     init {
         val filter = IntentFilter(ACTION_USB_PERMISSION)
-        context.registerReceiver(usbReceiver, filter)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            context.registerReceiver(usbReceiver, filter)
+        }
     }
 
     override fun onDestroy() {
@@ -168,9 +172,20 @@ class PrinterPlugin(private val context: Activity) : Plugin(context) {
     private var btOutputStream: java.io.OutputStream? = null
     private val SPP_UUID = java.util.UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
 
+    private fun hasBtPermissions(): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S) return true
+        return context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == android.content.pm.PackageManager.PERMISSION_GRANTED &&
+               context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+
     @Command
     fun bluetoothScan(invoke: Invoke) {
         try {
+            if (!hasBtPermissions()) {
+                invoke.reject("Permisos Bluetooth no concedidos. Abra Ajustes > Apps > Sistema Impresion > Permisos y active Bluetooth.")
+                return
+            }
+
             val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
 
             val resp = JSObject()
@@ -219,6 +234,11 @@ class PrinterPlugin(private val context: Activity) : Plugin(context) {
     @Command
     fun bluetoothConnect(invoke: Invoke) {
         try {
+            if (!hasBtPermissions()) {
+                invoke.reject("Permisos Bluetooth no concedidos. Abra Ajustes > Apps > Sistema Impresion > Permisos y active Bluetooth.")
+                return
+            }
+
             val mac = invoke.getArgs().optString("mac")?.takeIf { it.isNotEmpty() } ?: run {
                 invoke.reject("Direccion MAC requerida")
                 return

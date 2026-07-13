@@ -13,23 +13,20 @@ pub struct PrinterPlugin {
 #[cfg(target_os = "android")]
 impl PrinterPlugin {
     pub fn request_bt_permission(&self) {
-        match self.handle.run_mobile_plugin::<Value>("checkPermissions", ()) {
-            Ok(status) => {
-                let state = status
-                    .get("bluetooth")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if state == "granted" {
-                    return;
+        let _ = self
+            .handle
+            .run_mobile_plugin::<Value>("checkPermissions", ())
+            .and_then(|status| {
+                let state = status.get("bluetooth").and_then(|v| v.as_str()).unwrap_or("");
+                if state != "granted" {
+                    self.handle.run_mobile_plugin::<Value>(
+                        "requestPermissions",
+                        serde_json::json!({ "permissions": ["bluetooth"] }),
+                    )
+                } else {
+                    Ok(serde_json::Value::Null)
                 }
-            }
-            Err(_) => {}
-        }
-
-        let _ = self.handle.run_mobile_plugin::<Value>(
-            "requestPermissions",
-            serde_json::json!({ "permissions": ["bluetooth"] }),
-        );
+            });
     }
 
     pub fn bluetooth_scan(&self) -> Result<Value, String> {
@@ -58,9 +55,10 @@ impl PrinterPlugin {
     }
 
     pub fn bluetooth_status(&self) -> Result<Value, String> {
-        self.handle
-            .run_mobile_plugin("bluetoothStatus", ())
-            .map_err(|e| format!("bluetoothStatus: {}", e))
+        match self.handle.run_mobile_plugin("bluetoothStatus", ()) {
+            Ok(v) => Ok(v),
+            Err(_) => Ok(serde_json::json!({"connected": false})),
+        }
     }
 }
 

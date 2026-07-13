@@ -351,6 +351,13 @@ async function btScan() {
     debugLog('=== INICIANDO ESCANEO BLUETOOTH ===', 'log-info');
 
     try {
+        debugLog('Solicitando permisos Bluetooth...', 'log-info');
+        await invokeDebug('bluetooth_request_permissions');
+    } catch(e) {
+        debugWarn('Permisos BT (puede ya estar concedido): ' + e);
+    }
+
+    try {
         var result = await invokeDebug('bluetooth_scan_devices', { timeoutSecs: 10 });
         btDevices = result.devices || [];
 
@@ -394,6 +401,14 @@ async function btConnect() {
     debugLog('=== INICIANDO CONEXION BLUETOOTH a ' + mac + ' ===', 'log-info');
     connText.textContent = 'Conectando BT...';
     btConnectBtn.disabled = true;
+
+    try {
+        debugLog('Solicitando permisos Bluetooth...', 'log-info');
+        await invokeDebug('bluetooth_request_permissions');
+    } catch(e) {
+        debugWarn('Permisos BT (puede ya estar concedido): ' + e);
+    }
+
     try {
         var result = await invokeDebug('bluetooth_connect_printer', { mac: mac });
         btConnected = true;

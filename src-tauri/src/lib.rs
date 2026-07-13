@@ -539,14 +539,6 @@ fn check_printer_status(
         hw_present = false;
         lp_device = None;
         usb_connected = false;
-
-        state.request_bt_permission();
-
-        if let Ok(status) = state.bluetooth_status() {
-            if status.get("connected").and_then(|c| c.as_bool()).unwrap_or(false) {
-                bt_mac = Some("android-bt".to_string());
-            }
-        }
     }
 
     let bt_connected = bt_mac.is_some();
@@ -599,6 +591,24 @@ fn check_printer_status(
 }
 
 // ─── COMANDOS BLUETOOTH ─────────────────────────────────────────────
+
+#[tauri::command]
+fn bluetooth_request_permissions(
+    state: tauri::State<'_, PrinterPlugin>,
+) -> Result<String, String> {
+    log_cmd!("bluetooth_request_permissions");
+
+    #[cfg(target_os = "android")]
+    {
+        state.request_bt_permission();
+        Ok("ok".to_string())
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok("ok".to_string())
+    }
+}
 
 #[tauri::command]
 #[allow(unused_variables)]
@@ -1005,6 +1015,7 @@ pub fn run() {
         .plugin(plugin_printer::init())
         .invoke_handler(tauri::generate_handler![
             check_printer_status,
+            bluetooth_request_permissions,
             bluetooth_scan_devices,
             bluetooth_connect_printer,
             bluetooth_disconnect_printer,
