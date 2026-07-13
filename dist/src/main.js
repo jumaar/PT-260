@@ -96,9 +96,45 @@ function syncFontSize(value) {
     saveNum(LS_F, fontSize);
     drawPreview();
 }
-ctrlWidth.addEventListener('input',     e => syncWidth(e.target.value));
-ctrlHeight.addEventListener('input',    e => syncHeight(e.target.value));
-fontSizeInput.addEventListener('input', e => syncFontSize(e.target.value));
+function onNumberInput(e, commitFn, fallback) {
+    var v = parseInt(e.target.value);
+    if (!isNaN(v)) {
+        commitFn(v);
+    }
+}
+function onNumberChange(e, syncFn, fallback) {
+    syncFn(e.target.value);
+}
+ctrlWidth.addEventListener('input',     e => onNumberInput(e, v => { widthMm = v; updateCanvas(); }, 58));
+ctrlWidth.addEventListener('change',    e => onNumberChange(e, syncWidth, 58));
+ctrlWidth.addEventListener('blur',      e => onNumberChange(e, syncWidth, 58));
+ctrlHeight.addEventListener('input',    e => onNumberInput(e, v => { heightMm = v; updateCanvas(); }, 40));
+ctrlHeight.addEventListener('change',   e => onNumberChange(e, syncHeight, 40));
+ctrlHeight.addEventListener('blur',     e => onNumberChange(e, syncHeight, 40));
+fontSizeInput.addEventListener('input', e => onNumberInput(e, v => { fontSize = v; drawPreview(); }, 24));
+fontSizeInput.addEventListener('change',e => onNumberChange(e, syncFontSize, 24));
+fontSizeInput.addEventListener('blur',  e => onNumberChange(e, syncFontSize, 24));
+copiesInput.addEventListener('input',   e => { var v = parseInt(e.target.value); if (!isNaN(v) && v >= 1 && v <= 99) { /* solo validamos visual */ } });
+copiesInput.addEventListener('change',  e => { var v = Math.max(1, Math.min(99, parseInt(e.target.value) || 1)); copiesInput.value = v; });
+copiesInput.addEventListener('blur',    e => { var v = Math.max(1, Math.min(99, parseInt(e.target.value) || 1)); copiesInput.value = v; });
+
+// ─── STEPPER BOTONES (+/-) ───────────────────────────────────────────
+document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.stepper-btn');
+    if (!btn) return;
+    var input = document.getElementById(btn.dataset.target);
+    if (!input) return;
+    var step = parseInt(btn.dataset.step) || 0;
+    var min  = parseInt(input.min) || 0;
+    var max  = parseInt(input.max) || 100;
+    var val  = parseInt(input.value) || min;
+    var newVal = Math.max(min, Math.min(max, val + step));
+    if (newVal !== val) {
+        input.value = newVal;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+});
 
 // ─── DIBUJO ─────────────────────────────────────────────────────────
 function updateCanvas() {

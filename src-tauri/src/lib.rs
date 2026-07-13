@@ -8,6 +8,9 @@ use std::process::Command;
 use std::sync::Mutex;
 use tauri::Emitter;
 
+mod plugin_printer;
+use crate::plugin_printer::PrinterPlugin;
+
 // MAC del último dispositivo Bluetooth conectado (para reconexión automática)
 static LAST_BT_MAC: Mutex<Option<String>> = Mutex::new(None);
 
@@ -511,69 +514,100 @@ fn bt_rfcomm_send(mac: &str, channel: u8, data: &[u8]) -> Result<(), String> {
 // ─── COMANDOS TAURI ────────────────────────────────────────────────
 
 #[tauri::command]
-fn check_printer_status() -> serde_json::Value {
+fn check_printer_status(
+    state: tauri::State<'_, PrinterPlugin>,
+) -> serde_json::Value {
     log_cmd!("check_printer_status");
 
-    let hw_present = usb_device_present(IMPRESORA_VID, IMPRESORA_PID);
-    let lp_device = usblp_device_exists();
-    let usb_connected = hw_present && lp_device.is_some();
+    let usb_connected;
+    let hw_present;
+    let lp_device: Option<String>;
+
+    #[cfg(not(target_os = "android"))]
+    {
+        hw_present = usb_device_present(IMPRESORA_VID, IMPRESORA_PID);
+        lp_device = usblp_device_exists();
+        usb_connected = hw_present && lp_device.is_some();
+    }
+    #[cfg(target_os = "android")]
+    {
+        hw_present = false;
+        lp_device = None;
+        usb_connected = false;
+    }
 
     // Bluetooth: detectar impresora emparejada y conectada, o intentar
     // reconexión automática con MACs guardadas previamente.
     let mut bt_mac: Option<String> = None;
-    if !usb_connected {
-        bt_mac = bt_find_connected_printer();
 
-        if bt_mac.is_none() {
-            let persisted = load_persisted_macs();
-            if !persisted.is_empty() {
-                log_info!(
-                    "check_printer_status: intentando reconexion automatica a {} MAC(s) guardada(s)...",
-                    persisted.len()
-                );
-                for mac in &persisted {
-                    if bt_try_reconnect(mac) {
-                        bt_mac = Some(mac.clone());
-                        break;
+    #[cfg(not(target_os = "android"))]
+    {
+        if !usb_connected {
+            bt_mac = bt_find_connected_printer();
+
+            if bt_mac.is_none() {
+                let persisted = load_persisted_macs();
+                if !persisted.is_empty() {
+                    log_info!(
+                        "check_printer_status: intentando reconexion automatica a {} MAC(s) guardada(s)...",
+                        persisted.len()
+                    );
+                    for mac in &persisted {
+                        if bt_try_reconnect(mac) {
+                            bt_mac = Some(mac.clone());
+                            break;
+                        }
                     }
                 }
             }
-        }
 
-        if let Some(ref mac) = bt_mac {
-            if let Ok(mut stored) = LAST_BT_MAC.lock() {
-                *stored = Some(mac.clone());
+            if let Some(ref mac) = bt_mac {
+                if let Ok(mut stored) = LAST_BT_MAC.lock() {
+                    *stored = Some(mac.clone());
+                }
+                let _ = bt_preconnect_socket(mac, 1);
             }
-            let _ = bt_preconnect_socket(mac, 1);
         }
     }
+    #[cfg(target_os = "android")]
+    {
+        if let Ok(status) = state.bluetooth_status() {
+            if status.get("connected").and_then(|c| c.as_bool()).unwrap_or(false) {
+                bt_mac = Some("android-bt".to_string());
+            }
+        }
+    }
+
     let bt_connected = bt_mac.is_some();
     let connected = usb_connected || bt_connected;
 
-    if hw_present {
-        log_info!(
-            "check_printer_status → HW detectado (VID:{}, PID:{})",
-            IMPRESORA_VID,
-            IMPRESORA_PID
-        );
-        match &lp_device {
-            Some(path) => {
-                log_info!("check_printer_status → driver usblp cargado: {}", path);
+    #[cfg(not(target_os = "android"))]
+    {
+        if hw_present {
+            log_info!(
+                "check_printer_status → HW detectado (VID:{}, PID:{})",
+                IMPRESORA_VID,
+                IMPRESORA_PID
+            );
+            match &lp_device {
+                Some(path) => {
+                    log_info!("check_printer_status → driver usblp cargado: {}", path);
+                }
+                None => {
+                    log_warn!(
+                        "check_printer_status → HW presente pero driver usblp NO cargado. \
+                         Ejecute: sudo modprobe usblp"
+                    );
+                }
             }
-            None => {
-                log_warn!(
-                    "check_printer_status → HW presente pero driver usblp NO cargado. \
-                     Ejecute: sudo modprobe usblp"
-                );
-            }
+        } else {
+            log_warn!(
+                "check_printer_status → HW NO detectado. \
+                 Buscando VID:{} PID:{}",
+                IMPRESORA_VID,
+                IMPRESORA_PID
+            );
         }
-    } else {
-        log_warn!(
-            "check_printer_status → HW NO detectado. \
-             Buscando VID:{} PID:{}",
-            IMPRESORA_VID,
-            IMPRESORA_PID
-        );
     }
 
     if connected {
@@ -596,90 +630,161 @@ fn check_printer_status() -> serde_json::Value {
 // ─── COMANDOS BLUETOOTH ─────────────────────────────────────────────
 
 #[tauri::command]
-fn bluetooth_scan_devices(timeout_secs: Option<u64>) -> Vec<serde_json::Value> {
+#[allow(unused_variables)]
+fn bluetooth_scan_devices(
+    state: tauri::State<'_, PrinterPlugin>,
+    timeout_secs: Option<u64>,
+) -> Vec<serde_json::Value> {
     log_cmd!("bluetooth_scan_devices");
-    let timeout = timeout_secs.unwrap_or(10);
-    let devices = bluetooth_scan(timeout);
-    devices
-        .into_iter()
-        .map(|(mac, name)| {
-            serde_json::json!({"mac": mac, "name": name})
-        })
-        .collect()
-}
 
-#[tauri::command]
-fn bluetooth_connect_printer(mac: String) -> Result<String, String> {
-    log_cmd!("bluetooth_connect_printer");
-    log_info!("bluetooth: solicitada conexión a {}", mac);
-
-    // Emparejar primero
-    bluetooth_pair(&mac)?;
-
-    // Guardar MAC para impresión por socket RFCOMM directo
-    if let Ok(mut stored) = LAST_BT_MAC.lock() {
-        *stored = Some(mac.clone());
-    }
-
-    // Persistir la MAC en disco para reconexión automática en próximos arranques
-    save_persisted_mac(&mac);
-
-    // Asegurar enlace BlueZ. Con socket persistente ya no se resetea
-    // el enlace al estar conectado (eso causaba el ciclo disconnect/reconnect).
-    if !bt_is_connected(&mac) {
-        let _ = Command::new("bluetoothctl").args(["connect", &mac]).output();
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        if !bt_is_connected(&mac) {
-            bt_reset_link(&mac);
-        }
-    }
-
-    // Cerrar socket cacheado si es de otra MAC (se recreará al imprimir)
+    #[cfg(target_os = "android")]
     {
-        let cache = BT_SOCKET_CACHE.lock().ok();
-        if let Some(cache) = cache {
-            if cache.as_ref().map_or(false, |(_, m)| m != &mac) {
-                drop(cache);
-                bt_close_cached_socket();
+        match state.bluetooth_scan() {
+            Ok(resp) => {
+                let devices: Vec<serde_json::Value> = resp
+                    .get("devices")
+                    .and_then(|d| d.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                log_info!("bluetooth: {} dispositivos via plugin", devices.len());
+                return devices;
+            }
+            Err(e) => {
+                log_error!("bluetooth scan via plugin: {}", e);
+                return vec![];
             }
         }
     }
 
-    log_info!("bluetooth: impresora lista (RFCOMM canal 1, socket directo sin root)");
-
-    // Establecer socket RFCOMM persistente AHORA, no en la primera impresión
-    if let Err(e) = bt_preconnect_socket(&mac, 1) {
-        log_warn!("bluetooth: no se pudo pre-conectar socket RFCOMM: {}", e);
+    #[cfg(not(target_os = "android"))]
+    {
+        let timeout = timeout_secs.unwrap_or(10);
+        let devices = bluetooth_scan(timeout);
+        devices
+            .into_iter()
+            .map(|(mac, name)| {
+                serde_json::json!({"mac": mac, "name": name})
+            })
+            .collect()
     }
-
-    Ok(format!("bluetooth:{}", mac))
 }
 
 #[tauri::command]
-fn bluetooth_disconnect_printer() -> Result<(), String> {
+fn bluetooth_connect_printer(
+    state: tauri::State<'_, PrinterPlugin>,
+    mac: String,
+) -> Result<String, String> {
+    log_cmd!("bluetooth_connect_printer");
+    log_info!("bluetooth: solicitada conexion a {}", mac);
+
+    #[cfg(target_os = "android")]
+    {
+        match state.bluetooth_connect(&mac) {
+            Ok(resp) => {
+                let connected = resp
+                    .get("connected")
+                    .and_then(|c| c.as_bool())
+                    .unwrap_or(false);
+                if connected {
+                    log_info!("bluetooth: conectado via plugin a {}", mac);
+                    return Ok(format!("bluetooth:{}", mac));
+                }
+                Err("No se pudo conectar via Bluetooth".to_string())
+            }
+            Err(e) => Err(format!("Error conectando Bluetooth: {}", e)),
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        // Emparejar primero
+        bluetooth_pair(&mac)?;
+
+        // Guardar MAC para impresion por socket RFCOMM directo
+        if let Ok(mut stored) = LAST_BT_MAC.lock() {
+            *stored = Some(mac.clone());
+        }
+
+        // Persistir la MAC en disco para reconexion automatica en proximos arranques
+        save_persisted_mac(&mac);
+
+        // Asegurar enlace BlueZ. Con socket persistente ya no se resetea
+        // el enlace al estar conectado (eso causaba el ciclo disconnect/reconnect).
+        if !bt_is_connected(&mac) {
+            let _ = Command::new("bluetoothctl").args(["connect", &mac]).output();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if !bt_is_connected(&mac) {
+                bt_reset_link(&mac);
+            }
+        }
+
+        // Cerrar socket cacheado si es de otra MAC (se recreara al imprimir)
+        {
+            let cache = BT_SOCKET_CACHE.lock().ok();
+            if let Some(cache) = cache {
+                if cache.as_ref().map_or(false, |(_, m)| m != &mac) {
+                    drop(cache);
+                    bt_close_cached_socket();
+                }
+            }
+        }
+
+        log_info!("bluetooth: impresora lista (RFCOMM canal 1, socket directo sin root)");
+
+        // Establecer socket RFCOMM persistente AHORA, no en la primera impresion
+        if let Err(e) = bt_preconnect_socket(&mac, 1) {
+            log_warn!("bluetooth: no se pudo pre-conectar socket RFCOMM: {}", e);
+        }
+
+        Ok(format!("bluetooth:{}", mac))
+    }
+}
+
+#[tauri::command]
+fn bluetooth_disconnect_printer(
+    state: tauri::State<'_, PrinterPlugin>,
+) -> Result<(), String> {
     log_cmd!("bluetooth_disconnect_printer");
 
-    let mac = LAST_BT_MAC.lock().ok().and_then(|m| m.clone());
-
-    bt_close_cached_socket();
-
-    if let Some(mac) = mac {
-        log_info!("bluetooth: desconectando {} ...", mac);
-        let _ = Command::new("bluetoothctl")
-            .args(["disconnect", &mac])
-            .output();
+    #[cfg(target_os = "android")]
+    {
+        match state.bluetooth_disconnect() {
+            Ok(_) => {
+                log_info!("bluetooth: desconectado via plugin");
+                Ok(())
+            }
+            Err(e) => {
+                log_warn!("bluetooth: error al desconectar via plugin: {}", e);
+                Ok(())
+            }
+        }
     }
 
-    if let Ok(mut stored) = LAST_BT_MAC.lock() {
-        *stored = None;
+    #[cfg(not(target_os = "android"))]
+    {
+        let mac = LAST_BT_MAC.lock().ok().and_then(|m| m.clone());
+
+        bt_close_cached_socket();
+
+        if let Some(mac) = mac {
+            log_info!("bluetooth: desconectando {} ...", mac);
+            let _ = Command::new("bluetoothctl")
+                .args(["disconnect", &mac])
+                .output();
+        }
+
+        if let Ok(mut stored) = LAST_BT_MAC.lock() {
+            *stored = None;
+        }
+        log_info!("bluetooth: desconectado");
+        Ok(())
     }
-    log_info!("bluetooth: desconectado");
-    Ok(())
 }
 
 
 #[tauri::command]
 fn imprimir_etiqueta_raw(
+    state: tauri::State<'_, PrinterPlugin>,
     base64_image: String,
     width_mm: u32,
     height_mm: u32,
@@ -811,7 +916,7 @@ fn imprimir_etiqueta_raw(
 
     // ── Paso 6: Enviar a la impresora ──────────────────────────────
     log_info!("[6/6] enviando a la impresora...");
-    let result = write_to_printer(&tspl);
+    let result = write_to_printer(&state, &tspl);
     match &result {
         Ok(()) => log_info!("[6/6] IMPRESION COMPLETADA EXITOSAMENTE"),
         Err(e) => log_error!("[6/6] fallo al imprimir: {}", e),
@@ -819,64 +924,86 @@ fn imprimir_etiqueta_raw(
     result
 }
 
-fn write_to_printer(data: &[u8]) -> Result<(), String> {
+fn write_to_printer(
+    state: &PrinterPlugin,
+    data: &[u8],
+) -> Result<(), String> {
     log_info!(
         "write_to_printer: buscando dispositivo ({} bytes)...",
         data.len()
     );
 
-    // ── USB (prioridad) ───────────────────────────────────────────
-    for i in 0..10 {
-        let usb_path = format!("/dev/usb/lp{}", i);
-        if std::path::Path::new(&usb_path).exists() {
-            log_info!("write_to_printer: enviando por USB {} ...", usb_path);
-
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&usb_path)
-                .map_err(|e| format!("Error abriendo {}: {}", usb_path, e))?;
-
-            file.write_all(data)
-                .map_err(|e| format!("Error escribiendo en {}: {}", usb_path, e))?;
-
-            file.flush()
-                .map_err(|e| format!("Error flush en {}: {}", usb_path, e))?;
-
-            log_info!("write_to_printer: enviado por USB a {}", usb_path);
-            return Ok(());
+    #[cfg(target_os = "android")]
+    {
+        if let Ok(status) = state.bluetooth_status() {
+            if status.get("connected").and_then(|c| c.as_bool()).unwrap_or(false) {
+                log_info!("write_to_printer: enviando por Bluetooth via plugin...");
+                state.bluetooth_print(data).map_err(|e| {
+                    log_error!("write_to_printer: error BT plugin: {}", e);
+                    format!("Error enviando datos Bluetooth: {}", e)
+                })?;
+                return Ok(());
+            }
         }
+        log_error!(
+            "write_to_printer: no hay conexion Bluetooth activa en Android. \
+             Conecte primero desde la interfaz."
+        );
+        Err("No se encontro impresora Bluetooth. Conecte primero.".to_string())
     }
 
-    // ── BLUETOOTH (fallback) ──────────────────────────────────────
-    // Envío por socket RFCOMM directo (sin root, sin /dev/rfcomm).
-    // Si no hay MAC almacenada, intentamos autodetectar la impresora
-    // emparejada y conectada.
-    let mac = match LAST_BT_MAC.lock().ok().and_then(|m| m.clone()) {
-        Some(m) => m,
-        None => match bt_find_connected_printer() {
-            Some(m) => {
-                log_info!("write_to_printer: usando impresora BT autodetectada: {}", m);
-                m
-            }
-            None => {
-                log_error!(
-                    "write_to_printer: no hay impresora USB ni MAC Bluetooth. \
-                     USB: sudo modprobe usblp. Bluetooth: use bluetooth_connect_printer."
-                );
-                return Err("No se encontro impresora. Verifique USB o Bluetooth.".to_string());
-            }
-        },
-    };
+    #[cfg(not(target_os = "android"))]
+    {
+        // ── USB (prioridad) ───────────────────────────────────────────
+        for i in 0..10 {
+            let usb_path = format!("/dev/usb/lp{}", i);
+            if std::path::Path::new(&usb_path).exists() {
+                log_info!("write_to_printer: enviando por USB {} ...", usb_path);
 
-    log_info!("write_to_printer: enviando por Bluetooth (RFCOMM) a {} ...", mac);
-    match bt_rfcomm_send(&mac, 1, data) {
-        Ok(()) => {
-            log_info!("write_to_printer: enviado por Bluetooth a {}", mac);
-            Ok(())
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&usb_path)
+                    .map_err(|e| format!("Error abriendo {}: {}", usb_path, e))?;
+
+                file.write_all(data)
+                    .map_err(|e| format!("Error escribiendo en {}: {}", usb_path, e))?;
+
+                file.flush()
+                    .map_err(|e| format!("Error flush en {}: {}", usb_path, e))?;
+
+                log_info!("write_to_printer: enviado por USB a {}", usb_path);
+                return Ok(());
+            }
         }
-        Err(e) => {
-            log_error!("write_to_printer: {}", e);
-            Err("No se encontro impresora. Verifique USB o Bluetooth.".to_string())
+
+        // ── BLUETOOTH (fallback) ──────────────────────────────────────
+        let mac = match LAST_BT_MAC.lock().ok().and_then(|m| m.clone()) {
+            Some(m) => m,
+            None => match bt_find_connected_printer() {
+                Some(m) => {
+                    log_info!("write_to_printer: usando impresora BT autodetectada: {}", m);
+                    m
+                }
+                None => {
+                    log_error!(
+                        "write_to_printer: no hay impresora USB ni MAC Bluetooth. \
+                         USB: sudo modprobe usblp. Bluetooth: use bluetooth_connect_printer."
+                    );
+                    return Err("No se encontro impresora. Verifique USB o Bluetooth.".to_string());
+                }
+            },
+        };
+
+        log_info!("write_to_printer: enviando por Bluetooth (RFCOMM) a {} ...", mac);
+        match bt_rfcomm_send(&mac, 1, data) {
+            Ok(()) => {
+                log_info!("write_to_printer: enviado por Bluetooth a {}", mac);
+                Ok(())
+            }
+            Err(e) => {
+                log_error!("write_to_printer: {}", e);
+                Err("No se encontro impresora. Verifique USB o Bluetooth.".to_string())
+            }
         }
     }
 }
@@ -894,6 +1021,7 @@ pub fn run() {
     log_info!("");
 
     let builder = tauri::Builder::default()
+        .plugin(plugin_printer::init())
         .invoke_handler(tauri::generate_handler![
             check_printer_status,
             bluetooth_scan_devices,

@@ -70,12 +70,54 @@ main {
 .canvas-row { display: flex; align-items: center; gap: 12px; }
 .height-control { display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .height-control label { font-size: 0.75rem; color: #aaa; text-align: center; line-height: 1.2; }
-.height-control input {
-    width: 58px; background: #16213e; border: 1px solid #0f3460;
-    color: #e0e0e0; padding: 6px 4px; border-radius: 6px;
-    font-size: 0.85rem; text-align: center; outline: none;
+.stepper {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid #0f3460;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #16213e;
 }
-.height-control input:focus { border-color: #e94560; }
+.stepper input {
+    width: 48px;
+    border: none !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    color: #e0e0e0;
+    padding: 6px 0;
+    font-size: 0.85rem;
+    text-align: center;
+    outline: none;
+    -moz-appearance: textfield;
+}
+.stepper input::-webkit-outer-spin-button,
+.stepper input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+.stepper input:focus { background: transparent; }
+.stepper-btn {
+    background: transparent;
+    color: #e0e0e0;
+    border: none;
+    width: 32px;
+    height: 100%;
+    font-size: 1.1rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+    padding: 6px 0;
+    line-height: 1;
+}
+.stepper-btn:hover { background: #1a4a7a; color: #fff; }
+.stepper-btn:active { background: #e94560; color: #fff; }
+.height-control .stepper { width: 110px; }
+.height-control .stepper input { flex: 1; }
 
 #canvas-container {
     background: #0f3460; padding: 16px; border-radius: 8px;
@@ -88,12 +130,9 @@ main {
 
 .width-control { display: flex; align-items: center; gap: 8px; }
 .width-control label { font-size: 0.8rem; color: #aaa; font-weight: 500; }
-.width-control input {
-    width: 80px; background: #16213e; border: 1px solid #0f3460;
-    color: #e0e0e0; padding: 6px 10px; border-radius: 6px;
-    font-size: 0.85rem; text-align: center; outline: none;
+.width-control .stepper input {
+    width: 50px;
 }
-.width-control input:focus { border-color: #e94560; }
 
 .action-row { display: flex; align-items: center; gap: 12px; }
 .btn-primary {
@@ -120,12 +159,9 @@ footer {
 }
 .footer-control { display: flex; align-items: center; gap: 8px; }
 .footer-control label { font-size: 0.8rem; color: #aaa; font-weight: 500; }
-.footer-control input {
-    width: 70px; background: #1a1a2e; border: 1px solid #0f3460;
-    color: #e0e0e0; padding: 6px 10px; border-radius: 6px;
-    font-size: 0.85rem; text-align: center; outline: none;
+.footer-control .stepper input {
+    width: 44px;
 }
-.footer-control input:focus { border-color: #e94560; }
 
 /* ─── SPINNER ────────────────────────── */
 .spinner {

@@ -1,5 +1,6 @@
 package com.sistema_impresion.app
 
+import android.Manifest
 import android.app.Activity
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
@@ -11,12 +12,23 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbManager
 import app.tauri.annotation.Command
+import app.tauri.annotation.Permission
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import app.tauri.plugin.Invoke
 
-@TauriPlugin
+@TauriPlugin(
+    permissions = [
+        Permission(
+            strings = [
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN,
+            ],
+            alias = "bluetooth"
+        )
+    ]
+)
 class PrinterPlugin(private val context: Activity) : Plugin(context) {
 
     companion object {

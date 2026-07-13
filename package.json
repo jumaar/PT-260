@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "tauri": "tauri",
-    "dev": "tauri dev"
+    "dev": "tauri dev",
+    "build:apk": "tauri android build --apk --target aarch64 && mkdir -p release && cp src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk release/",
+    "build:deb": "tauri build --bundles deb && mkdir -p release && cp src-tauri/target/release/bundle/deb/sistema-impresion_*_amd64.deb release/"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
