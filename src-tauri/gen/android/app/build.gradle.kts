@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("rust")
 }
 
 android {
@@ -41,6 +42,10 @@ android {
     kotlinOptions {
         jvmTarget = "1.8"
     }
+}
+
+rust {
+    rootDirRel = "../../../"
 }
 
 dependencies {
