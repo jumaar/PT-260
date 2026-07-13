@@ -16,3 +16,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "sistema-impresion"
 include(":app")
+
+apply from: "tauri.settings.gradle"

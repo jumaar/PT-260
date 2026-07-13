@@ -1,5 +1,6 @@
 package com.sistema_impresion.app
 
+import android.app.Activity
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -16,7 +17,7 @@ import app.tauri.plugin.Plugin
 import app.tauri.plugin.Invoke
 
 @TauriPlugin
-class PrinterPlugin(private val context: Context) : Plugin(context) {
+class PrinterPlugin(private val context: Activity) : Plugin(context) {
 
     companion object {
         private const val ACTION_USB_PERMISSION = "com.sistema_impresion.app.USB_PERMISSION"
@@ -87,7 +88,7 @@ class PrinterPlugin(private val context: Context) : Plugin(context) {
     }
 
     private fun sendPrintData(invoke: Invoke) {
-        val bytes = invoke.getArray("data")?.let { jsonArray ->
+        val bytes = invoke.getArgs().optJSONArray("data")?.let { jsonArray ->
             ByteArray(jsonArray.length()) { i -> jsonArray.getInt(i).toByte() }
         } ?: run {
             invoke.reject("No se proporcionaron bytes de impresión")
@@ -179,7 +180,7 @@ class PrinterPlugin(private val context: Context) : Plugin(context) {
 
     @Command
     fun bluetoothConnect(invoke: Invoke) {
-        val mac = invoke.parseJSObject().getString("mac") ?: run {
+        val mac = invoke.getArgs().optString("mac")?.takeIf { it.isNotEmpty() } ?: run {
             invoke.reject("Direccion MAC requerida")
             return
         }
@@ -218,7 +219,7 @@ class PrinterPlugin(private val context: Context) : Plugin(context) {
 
     @Command
     fun bluetoothPrint(invoke: Invoke) {
-        val bytes = invoke.getArray("data")?.let { arr ->
+        val bytes = invoke.getArgs().optJSONArray("data")?.let { arr ->
             ByteArray(arr.length()) { i -> arr.getInt(i).toByte() }
         } ?: run {
             invoke.reject("No se proporcionaron datos")
