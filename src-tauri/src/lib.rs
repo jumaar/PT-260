@@ -139,9 +139,9 @@ fn bt_try_reconnect(mac: &str) -> bool {
 const IMPRESORA_VID: &str = "0483";
 const IMPRESORA_PID: &str = "5720";
 // Offset horizontal para el comando BITMAP (idéntico al X_OFFSET de Python)
-const BITMAP_X_OFFSET: i32 = 10;
+const BITMAP_X_OFFSET: i32 = -20;
 // Offset vertical (margen superior) en dots (8 dots = 1 mm)
-const BITMAP_Y_OFFSET: i32 = 10;
+const BITMAP_Y_OFFSET: i32 = 5;
 
 /// Verifica si el dispositivo USB con el VID/PID dado está físicamente conectado.
 /// Usa `lsusb` (igual que el sistema Python) — el método más fiable en Linux.
