@@ -17,3 +17,8 @@ Thumbs.db
 
 # Env
 .env
+
+# Binarios (van en GitHub Releases, no en git)
+*.apk
+*.aab
+release/
