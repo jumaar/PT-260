@@ -8,6 +8,26 @@ function logError(msg) { console.error('[front]', msg); }
 
 logInfo('main.js cargado');
 
+// ─── TOAST (reemplaza alert nativo que muestra URL en la cabecera) ──
+function showToast(msg, isError) {
+    var overlay = document.getElementById('toast-overlay');
+    overlay.innerHTML = '';
+    var box = document.createElement('div');
+    box.id = 'toast-box';
+    if (isError) box.className = 'error';
+    var p = document.createElement('div');
+    p.className = 'toast-msg';
+    p.textContent = msg;
+    var btn = document.createElement('button');
+    btn.className = 'toast-btn';
+    btn.textContent = 'OK';
+    btn.addEventListener('click', function() { overlay.style.display = 'none'; });
+    box.appendChild(p);
+    box.appendChild(btn);
+    overlay.appendChild(box);
+    overlay.style.display = 'flex';
+}
+
 // ─── PERSISTENCIA (localStorage) ────────────────────────────────────
 const LS_W = 'label_width_mm';
 const LS_H = 'label_height_mm';
@@ -97,7 +117,7 @@ function drawPreview() {
 
     if (!textLines.length || (textLines.length === 1 && textLines[0] === '')) {
         if (canvasFocused) drawCur(ctx, 8, 8);
-        else { ctx.fillStyle = '#ccc'; ctx.font = Math.round(fontSize*2*0.7) + 'px "Segoe UI", sans-serif'; ctx.fillText('Click para escribir', 8, 8); }
+        else { ctx.textBaseline = 'top'; ctx.fillStyle = '#666'; ctx.font = Math.round(fontSize*2*0.85) + 'px "Segoe UI", sans-serif'; ctx.fillText('Click para escribir', 8, 10); }
         return;
     }
     var fs = Math.round(fontSize * 2), lh = fs * 1.4, pad = 8;
@@ -257,8 +277,8 @@ async function ejecutarImpresion() {
     try {
         await invoke('imprimir_etiqueta_raw', { base64Image: b64, widthMm: widthMm, heightMm: heightMm, invert: invertCheckbox.checked, copies: copies });
         logInfo('impresion OK');
-        alert('Impresión enviada');
-    } catch(e) { logError('impresion FAIL: ' + e); alert('Error: ' + e); }
+        showToast('Impresión enviada');
+    } catch(e) { logError('impresion FAIL: ' + e); showToast('Error al imprimir. Verifique la conexion.', true); }
 }
 
 // ─── BOTONES ────────────────────────────────────────────────────────

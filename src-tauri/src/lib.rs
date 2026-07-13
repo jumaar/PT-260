@@ -349,6 +349,32 @@ fn bt_close_cached_socket() {
     }
 }
 
+/// Establece el socket RFCOMM persistente de inmediato (sin esperar a la
+/// primera impresión). Crea el socket, lo conecta y lo guarda en cache.
+fn bt_preconnect_socket(mac: &str, channel: u8) -> Result<(), String> {
+    {
+        let cache = BT_SOCKET_CACHE.lock().map_err(|e| format!("lock: {}", e))?;
+        if let Some((fd, cached_mac)) = cache.as_ref() {
+            if cached_mac == mac && bt_socket_healthy(*fd) {
+                log_info!("bluetooth: socket persistente ya existe para {}", mac);
+                return Ok(());
+            }
+        }
+    }
+
+    bt_close_cached_socket();
+
+    let fd = bt_create_rfcomm_socket(mac, channel)?;
+    if let Ok(mut cache) = BT_SOCKET_CACHE.lock() {
+        *cache = Some((fd, mac.to_string()));
+    } else {
+        unsafe { libc::close(fd); }
+        return Err("No se pudo cachear el socket".to_string());
+    }
+    log_info!("bluetooth: socket persistente establecido para {}", mac);
+    Ok(())
+}
+
 /// Verifica si un fd de socket sigue sano (sin errores pendientes).
 fn bt_socket_healthy(fd: i32) -> bool {
     let mut err: i32 = 0;
@@ -518,6 +544,7 @@ fn check_printer_status() -> serde_json::Value {
             if let Ok(mut stored) = LAST_BT_MAC.lock() {
                 *stored = Some(mac.clone());
             }
+            let _ = bt_preconnect_socket(mac, 1);
         }
     }
     let bt_connected = bt_mac.is_some();
@@ -619,6 +646,12 @@ fn bluetooth_connect_printer(mac: String) -> Result<String, String> {
     }
 
     log_info!("bluetooth: impresora lista (RFCOMM canal 1, socket directo sin root)");
+
+    // Establecer socket RFCOMM persistente AHORA, no en la primera impresión
+    if let Err(e) = bt_preconnect_socket(&mac, 1) {
+        log_warn!("bluetooth: no se pudo pre-conectar socket RFCOMM: {}", e);
+    }
+
     Ok(format!("bluetooth:{}", mac))
 }
 

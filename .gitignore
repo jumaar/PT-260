@@ -4,6 +4,7 @@ node_modules/
 # Build de Rust
 src-tauri/target/
 
+src-tauri/gen/
 # Archivos de sistema
 .DS_Store
 Thumbs.db
